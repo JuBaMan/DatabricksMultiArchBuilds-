@@ -4,11 +4,14 @@
   python scripts/check_dockerfile.py Dockerfile.builder.new Dockerfile.runtime.new
 
 For every RUN instruction the shell body is extracted (line continuations
-joined, '#' comment lines inside the body dropped the way BuildKit does) and
-handed to `bash -n`.  For every `case "${DATABRICKS_RUNTIME}"` block the set
-of runtime labels is printed so the builder / cluster / local blocks and the
-FROM router can be compared at a glance.  Exit status is non-zero on any
-syntax error, CRLF line ending, or router/case mismatch.
+joined, '#' comment lines inside the body dropped the way BuildKit does,
+leading `--mount=…` flags stripped) and handed to `bash -n`.  For every
+`case "${DATABRICKS_RUNTIME}"` block the set of runtime labels is printed so
+the builder / cluster / local blocks and the FROM router can be compared at a
+glance, and every runtime in the router must have both requirement files
+(`requirements/dbs-<ver>.txt` and `requirements/extras-<ver>.txt`).  Exit
+status is non-zero on any syntax error, CRLF line ending, router/case
+mismatch, or missing requirement file.
 """
 import os
 import re
@@ -73,8 +76,10 @@ def main(paths):
             if ins == "RUN":
                 runs += 1
                 # BuildKit removes the backslash-newline pair outright, so a
-                # continued command becomes one physical line.
+                # continued command becomes one physical line.  RUN flags
+                # (--mount=…) precede the shell body and are not shell.
                 body = arg.replace("\\\n", " ")
+                body = re.sub(r"^(?:--\S+\s+)+", "", body)
                 with tempfile.NamedTemporaryFile(
                     "w", suffix=".sh", delete=False, encoding="utf-8", newline="\n"
                 ) as f:
@@ -94,6 +99,13 @@ def main(paths):
             if sorted(c) != sorted(routers):
                 ok = False
                 print(f"  !! case block {i} does not match the FROM router")
+        req_dir = os.path.join(os.path.dirname(os.path.abspath(path)), "requirements")
+        for ver in routers:
+            for kind in ("dbs", "extras"):
+                f = os.path.join(req_dir, f"{kind}-{ver}.txt")
+                if not os.path.isfile(f):
+                    ok = False
+                    print(f"  !! missing {os.path.relpath(f)}")
     return 0 if ok else 1
 
 
