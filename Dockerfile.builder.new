@@ -75,6 +75,8 @@ RUN apt-get update && \
         dbus libdbus-1-dev libdbus-glib-1-dev patchelf \
         # psycopg2:
         libpq-dev \
+        # pyodbc (4.0.32 has no Linux wheels; needs sql.h and -lodbc):
+        unixodbc-dev \
         # PyGObject / pycairo:
         libcairo2-dev gobject-introspection libgirepository1.0-dev && \
     apt-get clean && rm -rf /var/lib/apt/lists/*
