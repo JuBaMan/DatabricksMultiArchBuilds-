@@ -145,9 +145,16 @@ RUN . /etc/dbr.env && set -eux && \
 #    builds normally.  --find-links=/wheels reuses the pandas wheel from step 5.
 #    Extras that are not on the Databricks list (azure-keyvault, dotenv, …)
 #    live at the bottom of the same requirements file.
+#
+#    pycairo (a PyGObject build dependency, Linux has no PyPI wheel) uses the
+#    meson-python backend, which needs a `meson` executable on PATH.  Older
+#    pips (14.3 pins 22.3.1) do not expose the one installed into the isolated
+#    build environment, so a system-wide meson + ninja is provided here.  Both
+#    stay in the builder only; nothing from them lands in /wheels.
 # ─────────────────────────────────────────────────────────────────────────────
 COPY requirements/dbs-${DATABRICKS_RUNTIME}.txt /tmp/requirements.txt
 RUN . /etc/dbr.env && set -eux && \
+    python3 -m pip install meson ninja && \
     printf "setuptools==${SETUPTOOLS_PIN}\n" > /tmp/constraints-main.txt && \
     PIP_CONSTRAINT=/tmp/constraints-main.txt \
     python3 -m pip wheel \
