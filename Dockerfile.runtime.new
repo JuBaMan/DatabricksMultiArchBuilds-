@@ -2,8 +2,9 @@
 # RUNTIME IMAGE — multi-target Dockerfile.  NO compilers in the final image.
 #
 # Targets:
-#   cluster — minimal image for Databricks clusters (Spark/Java injected by DBR)
-#   local   — adds Java, Spark, Hadoop, Delta Lake, Azure CLI for local dev
+#   cluster — minimal image for Databricks clusters (Spark/Hadoop injected by
+#             DBR; carries only the JDK that the runtime's release notes list)
+#   local   — adds Spark, Hadoop, Delta Lake, Azure CLI for local dev
 #
 # Only ONE build-arg needed (wheels image name derived automatically):
 #
@@ -26,12 +27,16 @@
 #     -f Dockerfile.runtime.new --target local \
 #     --build-arg DATABRICKS_RUNTIME=15.4 \
 #     -t lcccguy/databricks15.4:latest --push .
+#
+# Adding a runtime = one FROM line in the base-image router plus one case in
+# each of the two step-0 blocks (cluster and local).  See README.md.
 ###############################################################################
 
 # ── The only user-facing build arg ───────────────────────────────────────────
 ARG DATABRICKS_RUNTIME=16.3
 
 # ── Base-image router (BuildKit only builds the stage it needs) ──────────────
+#   Must stay identical to the router in Dockerfile.builder.new.
 FROM ubuntu:noble-20241015 AS base-16.3
 FROM ubuntu:jammy-20240808  AS base-15.4
 
@@ -52,17 +57,35 @@ FROM base-${DATABRICKS_RUNTIME} AS cluster
 
 ARG DEBIAN_FRONTEND=noninteractive
 ARG DATABRICKS_RUNTIME
+# Equivalent to passing --break-system-packages to every pip call, but also
+# works with pip < 23.0.1 (which rejects the flag).  ARG, not ENV: it is only
+# visible during the build and leaves no trace in the image.
+ARG PIP_BREAK_SYSTEM_PACKAGES=1
 
 # ── 0. Runtime-specific configuration ────────────────────────────────────────
+#   PYTHON_VERSION / PIP_VER    — as in the builder
+#   CLUSTER_JDK_MAJOR           — major of the JDK the release notes list under
+#                                 "Java:"; the custom-container spec says to
+#                                 match it ("Match the JDK to the default Java
+#                                 version of your target Databricks Runtime").
+#   CLUSTER_ZULU_ID             — Azul tarball id, e.g. zulu8.72.0.17-ca-jdk8.0.382
+#   CLUSTER_ZULU_ARM64_EMBEDDED — true when the aarch64 build only exists under
+#                                 cdn.azul.com/zulu-embedded (older JDK 8s)
 RUN set -eux; \
     case "${DATABRICKS_RUNTIME}" in \
     16.3) printf '%s\n' \
             'PYTHON_VERSION=3.12' \
             'PIP_VER=24.2.0' \
+            'CLUSTER_JDK_MAJOR=8' \
+            'CLUSTER_ZULU_ID=zulu8.72.0.17-ca-jdk8.0.382' \
+            'CLUSTER_ZULU_ARM64_EMBEDDED=true' \
             > /etc/dbr.env ;; \
     15.4) printf '%s\n' \
             'PYTHON_VERSION=3.11' \
             'PIP_VER=23.2.1' \
+            'CLUSTER_JDK_MAJOR=8' \
+            'CLUSTER_ZULU_ID=zulu8.78.0.19-ca-jdk8.0.412' \
+            'CLUSTER_ZULU_ARM64_EMBEDDED=false' \
             > /etc/dbr.env ;; \
     *) echo "Unsupported runtime: ${DATABRICKS_RUNTIME}" >&2; exit 1 ;; \
     esac
@@ -103,63 +126,68 @@ RUN . /etc/dbr.env && set -eux && \
 # ── 3. Bootstrap pip ────────────────────────────────────────────────────────
 RUN . /etc/dbr.env && set -eux && \
     curl -fsSL https://bootstrap.pypa.io/get-pip.py -o /tmp/get-pip.py && \
-    python3 /tmp/get-pip.py "pip==${PIP_VER}" --break-system-packages && \
+    python3 /tmp/get-pip.py "pip==${PIP_VER}" && \
     rm -f /tmp/get-pip.py
 
 # ── 4. Copy pre-built wheels from the builder image ─────────────────────────
 COPY --from=wheels /wheels /wheels
 
 # ── 5. Install everything from local wheels (no PyPI, no compilation) ────────
+#   delta-spark is deliberately NOT in the requirements file: it depends on
+#   pyspark, which would drag Spark into the cluster image.  It is installed
+#   with --no-deps in the local stage instead.
 COPY requirements/dbs-${DATABRICKS_RUNTIME}.txt /tmp/requirements.txt
-RUN python3 -m pip install --break-system-packages \
+RUN python3 -m pip install \
         --no-index --find-links=/wheels \
         -r /tmp/requirements.txt && \
-    python3 -m pip install --break-system-packages \
-        --no-index --find-links=/wheels \
-        azure-identity==1.19.0 azure-keyvault==4.2.0 && \
     rm -rf /wheels
 
 # ── 6. Create the Databricks virtualenv ─────────────────────────────────────
 #   Databricks expects /databricks/python3 to exist.
-#   virtualenv is already installed (it's in both requirements files).
+#   virtualenv is already installed (it's in every requirements file).
 RUN virtualenv --system-site-packages --python=python3 /databricks/python3 && \
     ln -sf /databricks/python3 /databricks/python
 
-# ── 7. Java 8 — required by the Databricks custom container spec ────────────
+# ── 7. JDK — required by the Databricks custom container spec ───────────────
 #   https://docs.databricks.com/aws/en/compute/custom-containers#requirements
-#   "JDK 8u191 as Java on the system PATH"
-#   We do NOT set JAVA_HOME — Databricks injects that at cluster start.
+#   "A JDK as Java on the system PATH … match the JDK to the default Java
+#    version of your target Databricks Runtime version."
+#   Installed under /opt/java<major>, with /opt/java as a stable symlink that
+#   the local stage uses for JAVA_HOME.  We do NOT set JAVA_HOME here —
+#   Databricks injects that at cluster start.
 ARG TARGETARCH
-ARG DATABRICKS_RUNTIME
-RUN set -eux; \
-    case "${DATABRICKS_RUNTIME}" in \
-    16.3) Z8_ID="zulu8.72.0.17-ca-jdk8.0.382";  ARM64_EMBEDDED=true  ;; \
-    15.4) Z8_ID="zulu8.78.0.19-ca-jdk8.0.412";  ARM64_EMBEDDED=false ;; \
-    *)    echo "Unsupported runtime: ${DATABRICKS_RUNTIME}" >&2; exit 1 ;; \
-    esac && \
+RUN . /etc/dbr.env && set -eux && \
     case "${TARGETARCH}" in \
     amd64) ARCH=x64;     EMBEDDED="" ;; \
     arm64) ARCH=aarch64; \
-           if [ "${ARM64_EMBEDDED}" = "true" ]; then EMBEDDED="-embedded"; \
+           if [ "${CLUSTER_ZULU_ARM64_EMBEDDED}" = "true" ]; then EMBEDDED="-embedded"; \
            else EMBEDDED=""; fi ;; \
     *)     echo "Unsupported arch ${TARGETARCH}" >&2; exit 1 ;; \
     esac && \
-    curl -fsSL -o /tmp/jdk8.tgz \
-        "https://cdn.azul.com/zulu${EMBEDDED}/bin/${Z8_ID}-linux_${ARCH}.tar.gz" && \
-    mkdir -p /opt/java8 && \
-    tar -xzf /tmp/jdk8.tgz --strip-components=1 -C /opt/java8 && \
-    rm -f /tmp/jdk8.tgz && \
-    update-alternatives --install /usr/bin/java java /opt/java8/bin/java 100 \
-        --slave /usr/bin/javac javac /opt/java8/bin/javac \
-        --slave /usr/bin/jar   jar   /opt/java8/bin/jar   \
-        --slave /usr/bin/jps   jps   /opt/java8/bin/jps
+    JDK_DIR="/opt/java${CLUSTER_JDK_MAJOR}" && \
+    curl -fsSL -o /tmp/jdk.tgz \
+        "https://cdn.azul.com/zulu${EMBEDDED}/bin/${CLUSTER_ZULU_ID}-linux_${ARCH}.tar.gz" && \
+    mkdir -p "${JDK_DIR}" && \
+    tar -xzf /tmp/jdk.tgz --strip-components=1 -C "${JDK_DIR}" && \
+    rm -f /tmp/jdk.tgz && \
+    ln -sfn "${JDK_DIR}" /opt/java && \
+    JSHELL_SLAVE="" && \
+    if [ -x "${JDK_DIR}/bin/jshell" ]; then \
+        JSHELL_SLAVE="--slave /usr/bin/jshell jshell ${JDK_DIR}/bin/jshell"; \
+    fi && \
+    update-alternatives --install /usr/bin/java java "${JDK_DIR}/bin/java" 100 \
+        --slave /usr/bin/javac javac "${JDK_DIR}/bin/javac" \
+        --slave /usr/bin/jar   jar   "${JDK_DIR}/bin/jar"   \
+        --slave /usr/bin/jps   jps   "${JDK_DIR}/bin/jps"   \
+        ${JSHELL_SLAVE}
 
 ENV PYSPARK_PYTHON=/databricks/python3/bin/python3
 
 
 ###############################################################################
 # ┌──────────────────────────────────────────────────────────────────────────┐
-# │  Stage: local — extends cluster with Java, Spark, Hadoop, Delta         │
+# │  Stage: local — extends cluster with Spark, Hadoop, Delta (+ JDK if the  │
+# │  Spark release needs a newer one than the cluster stage carries)         │
 # │                                                                          │
 # │  This image DOES set JAVA_HOME, SPARK_HOME, etc. because there is no   │
 # │  Databricks runtime to inject them on your laptop.                      │
@@ -170,36 +198,51 @@ FROM cluster AS local
 ARG DEBIAN_FRONTEND=noninteractive
 ARG DATABRICKS_RUNTIME
 ARG TARGETARCH
+ARG PIP_BREAK_SYSTEM_PACKAGES=1
 
 RUN apt-get update && \
     apt-get install -y --no-install-recommends curl sudo gpg && \
     apt-get clean && rm -rf /var/lib/apt/lists/*
 
 # ── 0. Append local-stage config ────────────────────────────────────────────
+#   SPARK_JDK_MAJOR      — JDK major Spark runs on.  If /opt/java<major> already
+#                          exists from the cluster stage nothing is downloaded.
+#   SPARK_ZULU_ID        — Azul tarball id used only when a download is needed
+#   SPARK_VER            — "powered by Apache Spark x.y.z" in the release notes
+#   HADOOP_VER           — <hadoop.version> of that Spark release's POM
+#   HADOOP_ARM64_SUFFIX  — "-aarch64" when Apache publishes an aarch64 tarball
+#                          for HADOOP_VER, empty to fall back to the x64 tarball
+#                          (jars are pure Java; only lib/native is arch-bound)
+#   DELTA_VER            — "Delta Lake: x.y.z" in the release notes
+#   SCALA_BIN            — Scala binary version of the delta-spark artifact
 RUN set -eux; \
     case "${DATABRICKS_RUNTIME}" in \
     16.3) printf '%s\n' \
-            'INSTALL_JAVA17=true' \
-            'JAVA17_ZULU_ID=zulu17.54.21-ca-jdk17.0.13' \
+            'SPARK_JDK_MAJOR=17' \
+            'SPARK_ZULU_ID=zulu17.54.21-ca-jdk17.0.13' \
             'SPARK_VER=3.5.2' \
             'HADOOP_VER=3.3.6' \
+            'HADOOP_ARM64_SUFFIX=-aarch64' \
             'DELTA_VER=3.3.0' \
+            'SCALA_BIN=2.12' \
             >> /etc/dbr.env ;; \
     15.4) printf '%s\n' \
-            'INSTALL_JAVA17=false' \
-            'JAVA17_ZULU_ID=' \
+            'SPARK_JDK_MAJOR=8' \
+            'SPARK_ZULU_ID=' \
             'SPARK_VER=3.5.0' \
             'HADOOP_VER=3.3.6' \
+            'HADOOP_ARM64_SUFFIX=-aarch64' \
             'DELTA_VER=3.2.0' \
+            'SCALA_BIN=2.12' \
             >> /etc/dbr.env ;; \
     *) echo "Unsupported runtime: ${DATABRICKS_RUNTIME}" >&2; exit 1 ;; \
     esac
 
-# ── Java 17 (conditional — 16.3 needs it, 15.4 doesn't) ─────────────────────
-# Java 8 is already inherited from the cluster stage.
+# ── JDK for Spark (conditional — only when the cluster stage's JDK differs) ──
 RUN . /etc/dbr.env && set -eux && \
-    if [ "${INSTALL_JAVA17}" != "true" ]; then \
-        echo "Skipping Java 17 (INSTALL_JAVA17=${INSTALL_JAVA17})"; \
+    JDK_DIR="/opt/java${SPARK_JDK_MAJOR}" && \
+    if [ -d "${JDK_DIR}" ]; then \
+        echo "Spark JDK ${SPARK_JDK_MAJOR} already present at ${JDK_DIR}"; \
         exit 0; \
     fi && \
     case "${TARGETARCH}" in \
@@ -207,19 +250,24 @@ RUN . /etc/dbr.env && set -eux && \
         arm64) ARCH=aarch64 ;; \
         *) echo "Unsupported arch ${TARGETARCH}" >&2; exit 1 ;; \
     esac && \
-    URL="https://cdn.azul.com/zulu/bin/${JAVA17_ZULU_ID}-linux_${ARCH}.tar.gz" && \
-    curl -fsSL -o /tmp/jdk17.tgz "$URL" && \
-    mkdir -p /opt/java17 && \
-    tar -xzf /tmp/jdk17.tgz --strip-components=1 -C /opt/java17 && \
-    rm -f /tmp/jdk17.tgz && \
-    update-alternatives --install /usr/bin/java java /opt/java17/bin/java 200 \
-        --slave /usr/bin/javac  javac  /opt/java17/bin/javac  \
-        --slave /usr/bin/jar    jar    /opt/java17/bin/jar    \
-        --slave /usr/bin/jshell jshell /opt/java17/bin/jshell \
-        --slave /usr/bin/jps    jps    /opt/java17/bin/jps
+    URL="https://cdn.azul.com/zulu/bin/${SPARK_ZULU_ID}-linux_${ARCH}.tar.gz" && \
+    curl -fsSL -o /tmp/jdk.tgz "$URL" && \
+    mkdir -p "${JDK_DIR}" && \
+    tar -xzf /tmp/jdk.tgz --strip-components=1 -C "${JDK_DIR}" && \
+    rm -f /tmp/jdk.tgz && \
+    JSHELL_SLAVE="" && \
+    if [ -x "${JDK_DIR}/bin/jshell" ]; then \
+        JSHELL_SLAVE="--slave /usr/bin/jshell jshell ${JDK_DIR}/bin/jshell"; \
+    fi && \
+    update-alternatives --install /usr/bin/java java "${JDK_DIR}/bin/java" 200 \
+        --slave /usr/bin/javac  javac  "${JDK_DIR}/bin/javac"  \
+        --slave /usr/bin/jar    jar    "${JDK_DIR}/bin/jar"    \
+        --slave /usr/bin/jps    jps    "${JDK_DIR}/bin/jps"    \
+        ${JSHELL_SLAVE}
 
-ENV JAVA_HOME=/opt/java8
-ENV PATH="/opt/java8/bin:${PATH}"
+# /opt/java -> /opt/java<CLUSTER_JDK_MAJOR>, created in the cluster stage.
+ENV JAVA_HOME=/opt/java
+ENV PATH="/opt/java/bin:${PATH}"
 
 # ── Spark (without Hadoop) ──────────────────────────────────────────────────
 RUN . /etc/dbr.env && set -eux && \
@@ -237,27 +285,25 @@ RUN . /etc/dbr.env && set -eux && \
 RUN . /etc/dbr.env && set -eux && \
     cd /opt/spark/python && \
     python3 setup.py -q sdist && \
-    python3 -m pip install --no-cache-dir --break-system-packages \
+    python3 -m pip install --no-cache-dir \
         "dist/pyspark-${SPARK_VER}.tar.gz" && \
     rm -rf build dist
 
 ENV SPARK_HOME=/opt/spark
-# Spark uses Java 17 when available (16.3), falls back to Java 8 (15.4).
-# SPARK_JAVA_HOME is resolved at build time via the symlink.
+# Spark runs on /opt/java<SPARK_JDK_MAJOR>; SPARK_JAVA_HOME is resolved at
+# build time via the symlink.
 RUN . /etc/dbr.env && set -eux && \
-    if [ "${INSTALL_JAVA17}" = "true" ]; then \
-        ln -sf /opt/java17 /opt/spark-java; \
-    else \
-        ln -sf /opt/java8  /opt/spark-java; \
-    fi
+    ln -sfn "/opt/java${SPARK_JDK_MAJOR}" /opt/spark-java
 ENV SPARK_JAVA_HOME=/opt/spark-java
 
 # ── Hadoop (multi-arch) ─────────────────────────────────────────────────────
+#   When Apache ships no aarch64 tarball (HADOOP_ARM64_SUFFIX empty) the x64
+#   tarball is used and its x64-only lib/native is dropped on arm64.
 RUN . /etc/dbr.env && set -eux && \
     cd /opt && \
     case "${TARGETARCH}" in \
-        amd64) FILE="hadoop-${HADOOP_VER}.tar.gz"         ;; \
-        arm64) FILE="hadoop-${HADOOP_VER}-aarch64.tar.gz" ;; \
+        amd64) FILE="hadoop-${HADOOP_VER}.tar.gz" ;; \
+        arm64) FILE="hadoop-${HADOOP_VER}${HADOOP_ARM64_SUFFIX}.tar.gz" ;; \
         *) echo "Unsupported arch ${TARGETARCH}" >&2; exit 1 ;; \
     esac && \
     URL="https://downloads.apache.org/hadoop/common/hadoop-${HADOOP_VER}/${FILE}" && \
@@ -268,6 +314,9 @@ RUN . /etc/dbr.env && set -eux && \
     sha512sum --check "${FILE}.sha512" && \
     tar -xzf "${FILE}" && \
     ln -sf "hadoop-${HADOOP_VER}" hadoop && \
+    if [ "${TARGETARCH}" = "arm64" ] && [ -z "${HADOOP_ARM64_SUFFIX}" ]; then \
+        rm -rf "hadoop-${HADOOP_VER}/lib/native"; \
+    fi && \
     rm -f /opt/*.tar.gz*
 
 ENV HADOOP_HOME=/opt/hadoop
@@ -285,11 +334,15 @@ RUN . /etc/dbr.env && set -eux && \
 
 ENV SPARK_CONF_DIR=/opt/spark/conf
 
-# Delta Lake JARs:
+# Delta Lake JARs + the delta-spark Python API.
+#   --no-deps: delta-spark's pyspark pin may be newer than the Spark release
+#   Databricks actually ships (e.g. delta 3.3.x wants pyspark>=3.5.3 while
+#   DBR 16.x runs Spark 3.5.2).  PySpark is already installed from /opt/spark.
 RUN . /etc/dbr.env && set -eux && \
     cd /opt/spark/jars && \
-    curl -fsSL -O "https://repo1.maven.org/maven2/io/delta/delta-spark_2.12/${DELTA_VER}/delta-spark_2.12-${DELTA_VER}.jar" && \
-    curl -fsSL -O "https://repo1.maven.org/maven2/io/delta/delta-storage/${DELTA_VER}/delta-storage-${DELTA_VER}.jar"
+    curl -fsSL -O "https://repo1.maven.org/maven2/io/delta/delta-spark_${SCALA_BIN}/${DELTA_VER}/delta-spark_${SCALA_BIN}-${DELTA_VER}.jar" && \
+    curl -fsSL -O "https://repo1.maven.org/maven2/io/delta/delta-storage/${DELTA_VER}/delta-storage-${DELTA_VER}.jar" && \
+    python3 -m pip install --no-cache-dir --no-deps "delta-spark==${DELTA_VER}"
 
 # ── Azure CLI (local dev only) ───────────────────────────────────────────────
 RUN curl -sL https://aka.ms/InstallAzureCLIDeb | sudo bash
