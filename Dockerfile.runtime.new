@@ -36,6 +36,7 @@ ARG DATABRICKS_RUNTIME=16.3
 #   Must stay identical to the router in Dockerfile.builder.new.
 FROM ubuntu:noble-20250910 AS base-17.3
 FROM ubuntu:noble-20241015 AS base-16.3
+FROM ubuntu:noble-20250404 AS base-16.4
 FROM ubuntu:jammy-20240808  AS base-15.4
 
 # ── Wheel cache (image name derived from the runtime version) ────────────────
@@ -81,6 +82,15 @@ RUN set -eux; \
             'CLUSTER_ZULU_ARM64_EMBEDDED=false' \
             > /etc/dbr.env ;; \
     16.3) printf '%s\n' \
+            'PYTHON_VERSION=3.12' \
+            'PYTHON_SOURCE_VERSION=' \
+            'PYTHON_RUNTIME_LIBS=' \
+            'PIP_VER=24.2.0' \
+            'CLUSTER_JDK_MAJOR=17' \
+            'CLUSTER_ZULU_ID=zulu17.54.21-ca-jdk17.0.13' \
+            'CLUSTER_ZULU_ARM64_EMBEDDED=false' \
+            > /etc/dbr.env ;; \
+    16.4) printf '%s\n' \
             'PYTHON_VERSION=3.12' \
             'PYTHON_SOURCE_VERSION=' \
             'PYTHON_RUNTIME_LIBS=' \
@@ -335,6 +345,15 @@ RUN set -eux; \
             'HADOOP_VER=3.3.6' \
             'HADOOP_ARM64_SUFFIX=-aarch64' \
             'DELTA_VER=3.3.0' \
+            'SCALA_BIN=2.12' \
+            >> /etc/dbr.env ;; \
+    16.4) printf '%s\n' \
+            'SPARK_JDK_MAJOR=17' \
+            'SPARK_ZULU_ID=zulu17.54.21-ca-jdk17.0.13' \
+            'SPARK_VER=3.5.2' \
+            'HADOOP_VER=3.3.6' \
+            'HADOOP_ARM64_SUFFIX=-aarch64' \
+            'DELTA_VER=3.3.1' \
             'SCALA_BIN=2.12' \
             >> /etc/dbr.env ;; \
     15.4) printf '%s\n' \
