@@ -174,7 +174,8 @@ from pyspark.sql import SparkSession
 s = SparkSession.builder.master(\"local[2]\").getOrCreate()
 s.range(5).write.format(\"delta\").mode(\"overwrite\").save(\"/tmp/d\")
 n = s.read.format(\"delta\").load(\"/tmp/d\").count()
-open(\"/tmp/out.txt\",\"w\").write(f\"rows={n} spark={s.version} jvm={s._jvm.System.getProperty(\"java.version\")}\n\")
+jv = s._jvm.System.getProperty(\"java.version\")
+open(\"/tmp/out.txt\",\"w\").write(f\"rows={n} spark={s.version} jvm={jv}\n\")
 s.stop()
 " >/dev/null 2>&1; cat /tmp/out.txt; python --version; java -version 2>&1 | head -1'
 ```
