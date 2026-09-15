@@ -428,12 +428,17 @@ ENV SPARK_JAVA_HOME=/opt/spark-java
 #     share/hadoop/mapreduce/hadoop-mapreduce-client-core — Spark's input and
 #       output formats and file committers live there;
 #     share/hadoop/tools/lib: only the Azure connectors and their SDKs;
-#     lib/native/libhadoop.so — optional native codecs;
-#     bin/, libexec/, etc/ — the `hadoop` CLI (2 MB).
+#     lib/native/libhadoop.so — the native codecs; Spark's launcher gets it via
+#       LD_LIBRARY_PATH in spark-env.sh (nothing else sets java.library.path,
+#       so without that line Spark silently runs without native Hadoop);
+#     etc/hadoop — the configuration directory on the classpath (drop a
+#       core-site.xml there for storage credentials).
 #   Dropped: share/doc (442 MB), yarn (137 MB), client (84 MB), the rest of
 #   tools/lib (330 MB, mostly aws-java-sdk-bundle: S3A is not wired; add
 #   hadoop-aws-*.jar and aws-java-sdk-bundle-*.jar to the `find` below if you
-#   need it), *-tests/*-sources jars, static native archives, sbin, include.
+#   need it), *-tests/*-sources jars, static native archives, include, and
+#   bin/sbin/libexec: the `hadoop` CLI refuses to start without the YARN tree
+#   and Spark never calls it.
 RUN . /etc/dbr.env && set -eux && \
     cd /opt && \
     case "${TARGETARCH}" in \
@@ -458,7 +463,7 @@ RUN . /etc/dbr.env && set -eux && \
         -o -name 'jetty-util-ajax-*.jar' \) -exec mv -t /tmp/keep/tools/lib {} + && \
     mv "${H}"/mapreduce/hadoop-mapreduce-client-core-*.jar /tmp/keep/mapreduce/ && \
     rm -rf share/doc "${H}/yarn" "${H}/client" "${H}/mapreduce" "${H}/tools" \
-           sbin include && \
+           bin sbin libexec include && \
     mv /tmp/keep/tools "${H}/tools" && \
     mv /tmp/keep/mapreduce "${H}/mapreduce" && \
     rmdir /tmp/keep && \
@@ -471,15 +476,17 @@ RUN . /etc/dbr.env && set -eux && \
     fi
 
 ENV HADOOP_HOME=/opt/hadoop
-ENV PATH="${HADOOP_HOME}/bin:${HADOOP_HOME}/sbin:${PATH}"
 
 # ── Wire Spark + Hadoop + Delta Lake ─────────────────────────────────────────
 #   The classpath is spelled out (instead of `hadoop classpath`) so it lists
-#   exactly the directories kept above.
+#   exactly the directories kept above.  LD_LIBRARY_PATH makes the JVM find
+#   libhadoop.so (java.library.path defaults to it); scoped to Spark launches
+#   by living in spark-env.sh rather than in the image environment.
 RUN . /etc/dbr.env && set -eux && \
     H=/opt/hadoop/share/hadoop && \
     printf '%s\n' \
         "export SPARK_DIST_CLASSPATH=\"/opt/hadoop/etc/hadoop:${H}/common/lib/*:${H}/common/*:${H}/hdfs:${H}/hdfs/lib/*:${H}/hdfs/*:${H}/mapreduce/*:${H}/tools/lib/*\"" \
+        'export LD_LIBRARY_PATH="/opt/hadoop/lib/native${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"' \
         'export JAVA_HOME=/opt/spark-java' \
         >> /opt/spark/conf/spark-env.sh && \
     printf '%s\n' \

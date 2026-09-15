@@ -148,9 +148,16 @@ relevant rule next to each step.
   YARN/Mesos/Kubernetes jars, R bindings, examples or sample data; PySpark is
   put on `sys.path` with a `.pth` file instead of being pip-installed, which
   is how Databricks exposes it and avoids a second copy of every jar. Hadoop:
-  only `common`, `hdfs`, `hadoop-mapreduce-client-core`, the Azure connectors
-  and `libhadoop.so` survive; docs, YARN, the shaded client jars, S3/Aliyun/
-  Kafka connectors and test/source jars are dropped. Python from source: no
+  only `common`, `hdfs`, `hadoop-mapreduce-client-core`, the Azure connectors,
+  `etc/hadoop` and `libhadoop.so` survive; docs, YARN, the shaded client jars,
+  S3/Aliyun/Kafka connectors, test/source jars and the `hadoop` CLI scripts
+  (which refuse to run without YARN) are dropped. Spark itself never needed
+  any of that: a Spark built "without Hadoop" cannot start unless
+  hadoop-common is on its classpath, so the smoke test below proves the
+  remainder is sufficient. `spark-env.sh` also exports `LD_LIBRARY_PATH` so
+  the JVM loads `libhadoop.so`; without it Spark silently runs with the
+  pure-Java fallbacks (the "Unable to load native-hadoop library" condition),
+  which was the case in the published images too. Python from source: no
   test suite, IDLE, tkinter, static library or `-O` bytecode variants.
 - **Bytecode caches are kept.** `__pycache__` is 220 to 380 MB per cluster
   image. Every Spark Python worker imports numpy and pandas on start, and
