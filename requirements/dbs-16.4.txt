@@ -160,8 +160,3 @@ wheel==0.43.0
 wrapt==1.14.1
 yapf==0.33.0
 zipp==3.17.0
-entrypoints==0.4
-dotenv==0.9.9
-python-dotenv==1.1.0
-azure-keyvault==4.2.0
-azure-identity==1.19.0
