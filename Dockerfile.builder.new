@@ -21,6 +21,7 @@ ARG DATABRICKS_RUNTIME=16.3
 # ── Base-image router (BuildKit only builds the stage actually needed) ───────
 #   Each tag is the dated Ubuntu image matching the point release named in the
 #   runtime's "System environment" release notes.
+FROM ubuntu:noble-20250910 AS base-17.3
 FROM ubuntu:noble-20241015 AS base-16.3
 FROM ubuntu:jammy-20240808  AS base-15.4
 FROM base-${DATABRICKS_RUNTIME} AS builder
@@ -42,6 +43,12 @@ ARG PIP_BREAK_SYSTEM_PACKAGES=1
 # ─────────────────────────────────────────────────────────────────────────────
 RUN set -eux; \
     case "${DATABRICKS_RUNTIME}" in \
+    17.3) printf '%s\n' \
+            'PYTHON_VERSION=3.12' \
+            'PIP_VER=25.0.1' \
+            'SETUPTOOLS_PIN=74.0.0' \
+            'PANDAS_VER=2.2.3' \
+            > /etc/dbr.env ;; \
     16.3) printf '%s\n' \
             'PYTHON_VERSION=3.12' \
             'PIP_VER=24.2.0' \
