@@ -73,6 +73,8 @@ RUN set -eux; \
     case "${DATABRICKS_RUNTIME}" in \
     17.3) printf '%s\n' \
             'PYTHON_VERSION=3.12' \
+            'PYTHON_SOURCE_VERSION=' \
+            'PYTHON_RUNTIME_LIBS=' \
             'PIP_VER=25.0.1' \
             'CLUSTER_JDK_MAJOR=17' \
             'CLUSTER_ZULU_ID=zulu17.58.21-ca-jdk17.0.15' \
