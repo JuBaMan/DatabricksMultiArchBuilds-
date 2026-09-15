@@ -1,0 +1,141 @@
+###############################################################################
+# WHEEL BUILDER — compiles every package into .whl files.  Never run directly.
+#
+# Only ONE build-arg needed:
+#   docker buildx build --platform linux/amd64,linux/arm64 \
+#     -f Dockerfile.builder.new \
+#     -t lcccguy/databricks16.3-wheels:latest --push .
+#
+#   docker buildx build --platform linux/amd64,linux/arm64 \
+#     -f Dockerfile.builder.new \
+#     --build-arg DATABRICKS_RUNTIME=15.4 \
+#     -t lcccguy/databricks15.4-wheels:latest --push .
+###############################################################################
+
+# ── The only user-facing build arg ───────────────────────────────────────────
+ARG DATABRICKS_RUNTIME=16.3
+
+# ── Base-image router (BuildKit only builds the stage actually needed) ───────
+FROM ubuntu:noble-20241015 AS base-16.3
+FROM ubuntu:jammy-20240808  AS base-15.4
+FROM base-${DATABRICKS_RUNTIME} AS builder
+
+ARG DEBIAN_FRONTEND=noninteractive
+ARG DATABRICKS_RUNTIME
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 0. Write runtime-specific configuration
+#    Every subsequent RUN sources /etc/dbr.env to pick up these variables.
+# ─────────────────────────────────────────────────────────────────────────────
+RUN set -eux; \
+    case "${DATABRICKS_RUNTIME}" in \
+    16.3) printf '%s\n' \
+            'PYTHON_VERSION=3.12' \
+            'PIP_VER=24.2.0' \
+            'SETUPTOOLS_PIN=74.0.0' \
+            'PANDAS_VER=1.5.3' \
+            > /etc/dbr.env ;; \
+    15.4) printf '%s\n' \
+            'PYTHON_VERSION=3.11' \
+            'PIP_VER=23.2.1' \
+            'SETUPTOOLS_PIN=68.0.0' \
+            'PANDAS_VER=1.5.3' \
+            > /etc/dbr.env ;; \
+    *) echo "Unsupported runtime: ${DATABRICKS_RUNTIME}" >&2; exit 1 ;; \
+    esac
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 1. System build dependencies (compilers, headers, shared libs)
+# ─────────────────────────────────────────────────────────────────────────────
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+        ca-certificates curl \
+        build-essential pkg-config cmake \
+        # dbus-python  (meson build ≥1.3, setuptools on older):
+        dbus libdbus-1-dev libdbus-glib-1-dev patchelf \
+        # psycopg2:
+        libpq-dev \
+        # PyGObject / pycairo:
+        libcairo2-dev gobject-introspection libgirepository1.0-dev && \
+    apt-get clean && rm -rf /var/lib/apt/lists/*
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 2. Install Python
+#    Noble ships Python 3.12 natively.  Jammy only has 3.10, so for 3.11 we
+#    add the "deadsnakes" PPA — a well-known Ubuntu PPA maintained by CPython
+#    core developers that publishes pre-built .deb packages for every Python
+#    minor version.  This is faster than compiling from source and produces
+#    identical binaries to what Databricks uses internally.
+# ─────────────────────────────────────────────────────────────────────────────
+RUN . /etc/dbr.env && set -eux && \
+    apt-get update && \
+    if ! apt-cache show "python${PYTHON_VERSION}" >/dev/null 2>&1; then \
+        apt-get install -y --no-install-recommends software-properties-common && \
+        add-apt-repository -y ppa:deadsnakes/ppa && \
+        apt-get update; \
+    fi && \
+    apt-get install -y --no-install-recommends \
+        "python${PYTHON_VERSION}" "python${PYTHON_VERSION}-dev" && \
+    ln -sf "/usr/bin/python${PYTHON_VERSION}" /usr/local/bin/python3 && \
+    ln -sf "/usr/bin/python${PYTHON_VERSION}" /usr/local/bin/python  && \
+    apt-get clean && rm -rf /var/lib/apt/lists/*
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 3. Bootstrap pip + setuptools
+#    Upstream get-pip.py no longer bundles setuptools (since ~2025), so we
+#    install the pinned version explicitly afterwards.
+# ─────────────────────────────────────────────────────────────────────────────
+RUN . /etc/dbr.env && set -eux && \
+    curl -fsSL https://bootstrap.pypa.io/get-pip.py -o /tmp/get-pip.py && \
+    python3 /tmp/get-pip.py "pip==${PIP_VER}" --break-system-packages && \
+    python3 -m pip install --break-system-packages \
+        "setuptools==${SETUPTOOLS_PIN}" wheel && \
+    rm -f /tmp/get-pip.py
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 4. Remove Debian's RECORD-less python3-packaging
+#    Avoids "Cannot uninstall packaging" when pip installs the pinned version
+#    inside build-isolation environments.
+# ─────────────────────────────────────────────────────────────────────────────
+RUN dpkg --purge --force-depends python3-packaging 2>/dev/null || true
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 5. Build pandas wheel FIRST (needs Cython<3 constraint)
+#
+#    pandas 1.5.3's .pyx files break with Cython 3.  We constrain BOTH
+#    setuptools (keeps pkg_resources available in build-isolation envs) and
+#    Cython<3.  Safe for all runtimes — 15.4 already pins Cython 0.29, and
+#    16.3's Cython 3.0.11 is built separately in step 6.
+# ─────────────────────────────────────────────────────────────────────────────
+RUN . /etc/dbr.env && set -eux && \
+    printf "setuptools==${SETUPTOOLS_PIN}\nCython<3\n" \
+        > /tmp/constraints-pandas.txt && \
+    PIP_CONSTRAINT=/tmp/constraints-pandas.txt \
+    python3 -m pip wheel \
+        --wheel-dir=/wheels \
+        "pandas==${PANDAS_VER}"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 6. Build all remaining wheels from the requirements file
+#
+#    Only setuptools is constrained — Cython==3.0.11 (16.3) or 0.29.32 (15.4)
+#    builds normally.  --find-links=/wheels reuses the pandas wheel from step 5.
+# ─────────────────────────────────────────────────────────────────────────────
+COPY requirements/dbs-${DATABRICKS_RUNTIME}.txt /tmp/requirements.txt
+RUN . /etc/dbr.env && set -eux && \
+    printf "setuptools==${SETUPTOOLS_PIN}\n" > /tmp/constraints-main.txt && \
+    PIP_CONSTRAINT=/tmp/constraints-main.txt \
+    python3 -m pip wheel \
+        --wheel-dir=/wheels \
+        --find-links=/wheels \
+        -r /tmp/requirements.txt
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 7. Build extra wheels (Azure SDK, etc.)
+# ─────────────────────────────────────────────────────────────────────────────
+RUN . /etc/dbr.env && set -eux && \
+    PIP_CONSTRAINT=/tmp/constraints-main.txt \
+    python3 -m pip wheel \
+        --wheel-dir=/wheels \
+        --find-links=/wheels \
+        azure-identity==1.19.0 azure-keyvault==4.2.0
