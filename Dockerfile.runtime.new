@@ -8,28 +8,25 @@
 #
 # Only ONE build-arg needed (wheels image name derived automatically):
 #
-#   # 16.3 (default):
 #   docker buildx build --platform linux/amd64,linux/arm64 \
 #     -f Dockerfile.runtime.new --target cluster \
+#     --build-arg DATABRICKS_RUNTIME=16.3 \
 #     -t lcccguy/databricks16.3:cluster --push .
 #
 #   docker buildx build --platform linux/amd64,linux/arm64 \
 #     -f Dockerfile.runtime.new --target local \
+#     --build-arg DATABRICKS_RUNTIME=16.3 \
 #     -t lcccguy/databricks16.3:latest --push .
-#
-#   # 15.4:
-#   docker buildx build --platform linux/amd64,linux/arm64 \
-#     -f Dockerfile.runtime.new --target cluster \
-#     --build-arg DATABRICKS_RUNTIME=15.4 \
-#     -t lcccguy/databricks15.4:cluster --push .
-#
-#   docker buildx build --platform linux/amd64,linux/arm64 \
-#     -f Dockerfile.runtime.new --target local \
-#     --build-arg DATABRICKS_RUNTIME=15.4 \
-#     -t lcccguy/databricks15.4:latest --push .
 #
 # Adding a runtime = one FROM line in the base-image router plus one case in
 # each of the two step-0 blocks (cluster and local).  See README.md.
+#
+# Size rules every step follows (README, "Size and fidelity rules"):
+#   * every apt package is justified in a comment next to it;
+#   * inputs needed only during a step (wheels, requirement files, tarballs)
+#     are bind-mounted or deleted in the SAME RUN, so no layer carries them;
+#   * every RUN that touches apt or pip removes the lists, caches and logs it
+#     produced before it ends (a later `rm` would not shrink the image).
 ###############################################################################
 
 # ── The only user-facing build arg ───────────────────────────────────────────
@@ -41,29 +38,29 @@ FROM ubuntu:noble-20241015 AS base-16.3
 FROM ubuntu:jammy-20240808  AS base-15.4
 
 # ── Wheel cache (image name derived from the runtime version) ────────────────
+#   Bind-mounted into the install step below; never copied into a layer.
 FROM lcccguy/databricks${DATABRICKS_RUNTIME}-wheels:latest AS wheels
 
 
 ###############################################################################
 # ┌──────────────────────────────────────────────────────────────────────────┐
-# │  Stage: cluster — minimal runtime for Databricks                        │
-# │                                                                          │
-# │  Does NOT set JAVA_HOME / SPARK_HOME / SPARK_CONF_DIR.                  │
-# │  Databricks injects its own Spark, Java, and Hadoop at cluster start.   │
-# │  Setting those ENV vars here would override Databricks and break things. │
+# │  Stage: config — writes /etc/dbr.env, shared by python-src and cluster  │
 # └──────────────────────────────────────────────────────────────────────────┘
 ###############################################################################
-FROM base-${DATABRICKS_RUNTIME} AS cluster
-
-ARG DEBIAN_FRONTEND=noninteractive
+FROM base-${DATABRICKS_RUNTIME} AS config
 ARG DATABRICKS_RUNTIME
-# Equivalent to passing --break-system-packages to every pip call, but also
-# works with pip < 23.0.1 (which rejects the flag).  ARG, not ENV: it is only
-# visible during the build and leaves no trace in the image.
-ARG PIP_BREAK_SYSTEM_PACKAGES=1
 
 # ── 0. Runtime-specific configuration ────────────────────────────────────────
-#   PYTHON_VERSION / PIP_VER    — as in the builder
+#   PYTHON_VERSION              — "Python: x.y.z" in the release notes, as x.y
+#   PYTHON_SOURCE_VERSION       — x.y.z when the Ubuntu release does not ship
+#                                 that exact patch level; CPython is then
+#                                 compiled in the python-src stage (15.4: jammy
+#                                 only has 3.11.0rc1, the notes say 3.11.11).
+#                                 Empty = use the distro package.
+#   PYTHON_RUNTIME_LIBS         — shared libraries a source-built CPython needs
+#                                 at run time (package names differ between
+#                                 Ubuntu releases); empty when not source-built
+#   PIP_VER                     — the pip pin in "Installed Python libraries"
 #   CLUSTER_JDK_MAJOR           — major of the JDK the release notes list under
 #                                 "Java:"; the custom-container spec says to
 #                                 match it ("Match the JDK to the default Java
@@ -75,13 +72,17 @@ RUN set -eux; \
     case "${DATABRICKS_RUNTIME}" in \
     16.3) printf '%s\n' \
             'PYTHON_VERSION=3.12' \
+            'PYTHON_SOURCE_VERSION=' \
+            'PYTHON_RUNTIME_LIBS=' \
             'PIP_VER=24.2.0' \
-            'CLUSTER_JDK_MAJOR=8' \
-            'CLUSTER_ZULU_ID=zulu8.72.0.17-ca-jdk8.0.382' \
-            'CLUSTER_ZULU_ARM64_EMBEDDED=true' \
+            'CLUSTER_JDK_MAJOR=17' \
+            'CLUSTER_ZULU_ID=zulu17.54.21-ca-jdk17.0.13' \
+            'CLUSTER_ZULU_ARM64_EMBEDDED=false' \
             > /etc/dbr.env ;; \
     15.4) printf '%s\n' \
             'PYTHON_VERSION=3.11' \
+            'PYTHON_SOURCE_VERSION=3.11.11' \
+            'PYTHON_RUNTIME_LIBS="libssl3 libffi8 libbz2-1.0 liblzma5 libsqlite3-0 libreadline8 libncursesw6 libgdbm6 zlib1g"' \
             'PIP_VER=23.2.1' \
             'CLUSTER_JDK_MAJOR=8' \
             'CLUSTER_ZULU_ID=zulu8.78.0.19-ca-jdk8.0.412' \
@@ -90,71 +91,163 @@ RUN set -eux; \
     *) echo "Unsupported runtime: ${DATABRICKS_RUNTIME}" >&2; exit 1 ;; \
     esac
 
+
+###############################################################################
+# ┌──────────────────────────────────────────────────────────────────────────┐
+# │  Stage: python-src — compiles CPython when the distro lacks the exact   │
+# │  patch level.  Build tools live here only; the cluster stage copies     │
+# │  /out.  When PYTHON_SOURCE_VERSION is empty, /out stays empty and the   │
+# │  COPY is a no-op.                                                        │
+# └──────────────────────────────────────────────────────────────────────────┘
+###############################################################################
+FROM config AS python-src
+ARG DEBIAN_FRONTEND=noninteractive
+
+#   No PGO/LTO: identical procedure on amd64 and arm64, and QEMU builds stay
+#   tractable.  The interpreter is a few percent slower than Ubuntu's build.
+#   Dropped from the install: the test suite, IDLE, turtle demos, tkinter (no
+#   Tk), the static libpython, man pages, and the -O1/-O2 bytecode variants.
+RUN . /etc/dbr.env && set -eux && mkdir -p /out && \
+    if [ -z "${PYTHON_SOURCE_VERSION}" ]; then exit 0; fi && \
+    apt-get update && \
+    apt-get install -y --no-install-recommends \
+        ca-certificates curl xz-utils build-essential pkg-config \
+        libssl-dev zlib1g-dev libbz2-dev liblzma-dev libffi-dev \
+        libsqlite3-dev libreadline-dev libncursesw5-dev libgdbm-dev uuid-dev && \
+    curl -fsSL -o /tmp/python.tar.xz \
+        "https://www.python.org/ftp/python/${PYTHON_SOURCE_VERSION}/Python-${PYTHON_SOURCE_VERSION}.tar.xz" && \
+    mkdir /tmp/python && \
+    tar -xJf /tmp/python.tar.xz --strip-components=1 -C /tmp/python && \
+    cd /tmp/python && \
+    ./configure --quiet --prefix=/usr/local --with-ensurepip=no && \
+    make --quiet -j"$(nproc)" && \
+    make --quiet DESTDIR=/out install && \
+    PYLIB="/out/usr/local/lib/python${PYTHON_VERSION}" && \
+    rm -rf "${PYLIB}/test" "${PYLIB}/idlelib" "${PYLIB}/turtledemo" \
+           "${PYLIB}/tkinter" "${PYLIB}"/config-*/libpython*.a \
+           /out/usr/local/share/man && \
+    find "${PYLIB}" -name '*.opt-[12].pyc' -delete
+
+
+###############################################################################
+# ┌──────────────────────────────────────────────────────────────────────────┐
+# │  Stage: cluster — minimal runtime for Databricks                        │
+# │                                                                          │
+# │  Does NOT set JAVA_HOME / SPARK_HOME / SPARK_CONF_DIR.                  │
+# │  Databricks injects its own Spark, Java, and Hadoop at cluster start.   │
+# │  Setting those ENV vars here would override Databricks and break things. │
+# └──────────────────────────────────────────────────────────────────────────┘
+###############################################################################
+FROM config AS cluster
+
+ARG DEBIAN_FRONTEND=noninteractive
+ARG DATABRICKS_RUNTIME
+# Equivalent to passing --break-system-packages to every pip call, but also
+# works with pip < 23.0.1 (which rejects the flag).  ARG, not ENV: it is only
+# visible during the build and leaves no trace in the image.
+ARG PIP_BREAK_SYSTEM_PACKAGES=1
+
+# Databricks' reference images (github.com/databricks/containers) run with a
+# UTF-8 C locale; notebooks and Spark workers inherit it.
+ENV LANG=C.UTF-8 \
+    LC_ALL=C.UTF-8
+
 # ── 1. Runtime-only system packages ─────────────────────────────────────────
-#   Shared libraries that compiled Python extensions link against,
-#   plus utilities Databricks requires to manage the container.
+#   Everything the custom-container spec requires, plus the shared libraries
+#   that compiled wheels link against.  No -dev headers, no compilers.
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
-        ca-certificates curl bash iproute2 coreutils procps sudo \
-        # Databricks init system:
-        monit acl \
-        # Runtime shared libs (NOT -dev headers):
+        # Required by the spec ("Build your own Docker base"): \
+        bash iproute2 coreutils procps sudo acl \
+        # TLS roots + downloader: JDK tarball at build time, init scripts at run time: \
+        ca-certificates curl \
+        # dbus-python: \
         libdbus-1-3 libdbus-glib-1-2 \
+        # psycopg2: \
         libpq5 \
+        # PyGObject / pycairo: \
         libcairo2 libgirepository-1.0-1 gir1.2-glib-2.0 \
-        # pyodbc runtime:
+        # pyodbc: \
         libodbc2 \
-        # OpenMP runtime (xgboost, lightgbm):
+        # OpenMP runtime (scikit-learn, xgboost, lightgbm): \
         libgomp1 && \
-    apt-get clean && rm -rf /var/lib/apt/lists/*
+    # Recent runtimes install cluster libraries under a dedicated user
+    # (that is why `acl` is required); the reference image creates it too.
+    useradd libraries && usermod -L libraries && \
+    apt-get clean && \
+    rm -rf /var/lib/apt/lists/* /var/cache/apt/* /var/log/apt /var/log/dpkg.log \
+           /var/log/alternatives.log /var/cache/debconf/*-old
 
-# ── 2. Install Python (deadsnakes PPA used when version isn't native) ────────
+# ── 2. Python ───────────────────────────────────────────────────────────────
+#   Either the distro package (when its patch level is the one in the release
+#   notes) or the /usr/local tree compiled in python-src plus the shared
+#   libraries it links.  Only python3.x itself: no -venv (drags in
+#   python3-distutils and, on jammy, a second Python 3.10), no -dev (headers).
+#   virtualenv from the library list creates /databricks/python3 without the
+#   venv module.
+COPY --from=python-src /out/ /
 RUN . /etc/dbr.env && set -eux && \
     apt-get update && \
-    if ! apt-cache show "python${PYTHON_VERSION}" >/dev/null 2>&1; then \
-        apt-get install -y --no-install-recommends software-properties-common && \
-        add-apt-repository -y ppa:deadsnakes/ppa && \
-        apt-get update; \
+    if [ -z "${PYTHON_SOURCE_VERSION}" ]; then \
+        apt-get install -y --no-install-recommends "python${PYTHON_VERSION}"; \
+    else \
+        apt-get install -y --no-install-recommends ${PYTHON_RUNTIME_LIBS}; \
     fi && \
-    apt-get install -y --no-install-recommends \
-        "python${PYTHON_VERSION}" "python${PYTHON_VERSION}-venv" && \
-    ln -sf "/usr/bin/python${PYTHON_VERSION}" /usr/local/bin/python  && \
-    ln -sf "/usr/bin/python${PYTHON_VERSION}" /usr/local/bin/python3 && \
+    PY="$(command -v "python${PYTHON_VERSION}")" && \
+    ln -sf "${PY}" /usr/local/bin/python && \
+    ln -sf "${PY}" /usr/local/bin/python3 && \
+    # Debian's RECORD-less python3-packaging breaks `pip install packaging==`:
     dpkg --purge --force-depends python3-packaging 2>/dev/null || true && \
-    apt-get clean && rm -rf /var/lib/apt/lists/*
+    apt-get clean && \
+    rm -rf /var/lib/apt/lists/* /var/cache/apt/* /var/log/apt /var/log/dpkg.log \
+           /var/log/alternatives.log /var/cache/debconf/*-old
 
-# ── 3. Bootstrap pip ────────────────────────────────────────────────────────
+# ── 3. Bootstrap the pinned pip ─────────────────────────────────────────────
 RUN . /etc/dbr.env && set -eux && \
     curl -fsSL https://bootstrap.pypa.io/get-pip.py -o /tmp/get-pip.py && \
-    python3 /tmp/get-pip.py "pip==${PIP_VER}" && \
-    rm -f /tmp/get-pip.py
+    python3 /tmp/get-pip.py --no-cache-dir "pip==${PIP_VER}" && \
+    rm -rf /tmp/get-pip.py /root/.cache
 
-# ── 4. Copy pre-built wheels from the builder image ─────────────────────────
-COPY --from=wheels /wheels /wheels
+# ── 4. Libraries: the release-notes table verbatim, then the extras ─────────
+#   * /wheels and requirements/ are bind mounts: nothing lands in a layer.
+#   * The Databricks table is a complete `pip freeze` of the runtime, so it is
+#     installed with --no-deps exactly as Databricks' own reference image does
+#     (github.com/databricks/containers, ubuntu/python/Dockerfile).  Letting pip
+#     resolve dependencies instead pulled 63 unlisted packages (a whole
+#     JupyterLab) into 16.4.
+#   * The extras resolve their own dependencies but are constrained (-c) to the
+#     table, so they can never move a Databricks pin; a conflict fails the build.
+#   * --no-index: every wheel must come from the builder checkpoint.
+#   * /databricks/python3 is the virtualenv Databricks expects, created the way
+#     the reference image does it (--system-site-packages --no-setuptools) and
+#     re-seeded with the runtime's pinned pip instead of virtualenv's bundled one.
+#   * Bytecode caches are kept on purpose: every Spark Python worker imports
+#     numpy/pandas on start, and without .pyc files each cold process
+#     recompiles them (README, "Size and fidelity rules").
+RUN --mount=type=bind,from=wheels,source=/wheels,target=/wheels \
+    --mount=type=bind,source=requirements,target=/tmp/requirements \
+    . /etc/dbr.env && set -eux && \
+    python3 -m pip install --no-cache-dir --no-index --find-links=/wheels \
+        --no-deps -r "/tmp/requirements/dbs-${DATABRICKS_RUNTIME}.txt" && \
+    python3 -m pip install --no-cache-dir --no-index --find-links=/wheels \
+        -c "/tmp/requirements/dbs-${DATABRICKS_RUNTIME}.txt" \
+        -r "/tmp/requirements/extras-${DATABRICKS_RUNTIME}.txt" && \
+    virtualenv --system-site-packages --python=python3 \
+        --no-download --no-setuptools --no-periodic-update /databricks/python3 && \
+    ln -sfn /databricks/python3 /databricks/python && \
+    /databricks/python3/bin/pip install --no-cache-dir --no-index \
+        --find-links=/wheels "pip==${PIP_VER}" && \
+    rm -rf /root/.cache /root/.local/share/virtualenv
 
-# ── 5. Install everything from local wheels (no PyPI, no compilation) ────────
-#   delta-spark is deliberately NOT in the requirements file: it depends on
-#   pyspark, which would drag Spark into the cluster image.  It is installed
-#   with --no-deps in the local stage instead.
-COPY requirements/dbs-${DATABRICKS_RUNTIME}.txt /tmp/requirements.txt
-RUN python3 -m pip install \
-        --no-index --find-links=/wheels \
-        -r /tmp/requirements.txt && \
-    rm -rf /wheels
-
-# ── 6. Create the Databricks virtualenv ─────────────────────────────────────
-#   Databricks expects /databricks/python3 to exist.
-#   virtualenv is already installed (it's in every requirements file).
-RUN virtualenv --system-site-packages --python=python3 /databricks/python3 && \
-    ln -sf /databricks/python3 /databricks/python
-
-# ── 7. JDK — required by the Databricks custom container spec ───────────────
+# ── 5. JDK — required by the Databricks custom container spec ───────────────
 #   https://docs.databricks.com/aws/en/compute/custom-containers#requirements
 #   "A JDK as Java on the system PATH … match the JDK to the default Java
 #    version of your target Databricks Runtime version."
 #   Installed under /opt/java<major>, with /opt/java as a stable symlink that
 #   the local stage uses for JAVA_HOME.  We do NOT set JAVA_HOME here —
 #   Databricks injects that at cluster start.
+#   Dropped from the tarball (not needed to run Java): JDK sources (src.zip),
+#   jlink modules (jmods), demos, samples, man pages — 134 MB of a Zulu 17.
 ARG TARGETARCH
 RUN . /etc/dbr.env && set -eux && \
     case "${TARGETARCH}" in \
@@ -170,6 +263,8 @@ RUN . /etc/dbr.env && set -eux && \
     mkdir -p "${JDK_DIR}" && \
     tar -xzf /tmp/jdk.tgz --strip-components=1 -C "${JDK_DIR}" && \
     rm -f /tmp/jdk.tgz && \
+    rm -rf "${JDK_DIR}/lib/src.zip" "${JDK_DIR}/src.zip" "${JDK_DIR}/jmods" \
+           "${JDK_DIR}/demo" "${JDK_DIR}/sample" "${JDK_DIR}/man" && \
     ln -sfn "${JDK_DIR}" /opt/java && \
     JSHELL_SLAVE="" && \
     if [ -x "${JDK_DIR}/bin/jshell" ]; then \
@@ -179,7 +274,8 @@ RUN . /etc/dbr.env && set -eux && \
         --slave /usr/bin/javac javac "${JDK_DIR}/bin/javac" \
         --slave /usr/bin/jar   jar   "${JDK_DIR}/bin/jar"   \
         --slave /usr/bin/jps   jps   "${JDK_DIR}/bin/jps"   \
-        ${JSHELL_SLAVE}
+        ${JSHELL_SLAVE} && \
+    rm -f /var/log/alternatives.log
 
 ENV PYSPARK_PYTHON=/databricks/python3/bin/python3
 
@@ -199,10 +295,6 @@ ARG DEBIAN_FRONTEND=noninteractive
 ARG DATABRICKS_RUNTIME
 ARG TARGETARCH
 ARG PIP_BREAK_SYSTEM_PACKAGES=1
-
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends curl sudo gpg && \
-    apt-get clean && rm -rf /var/lib/apt/lists/*
 
 # ── 0. Append local-stage config ────────────────────────────────────────────
 #   SPARK_JDK_MAJOR      — JDK major Spark runs on.  If /opt/java<major> already
@@ -255,6 +347,8 @@ RUN . /etc/dbr.env && set -eux && \
     mkdir -p "${JDK_DIR}" && \
     tar -xzf /tmp/jdk.tgz --strip-components=1 -C "${JDK_DIR}" && \
     rm -f /tmp/jdk.tgz && \
+    rm -rf "${JDK_DIR}/lib/src.zip" "${JDK_DIR}/src.zip" "${JDK_DIR}/jmods" \
+           "${JDK_DIR}/demo" "${JDK_DIR}/sample" "${JDK_DIR}/man" && \
     JSHELL_SLAVE="" && \
     if [ -x "${JDK_DIR}/bin/jshell" ]; then \
         JSHELL_SLAVE="--slave /usr/bin/jshell jshell ${JDK_DIR}/bin/jshell"; \
@@ -263,13 +357,20 @@ RUN . /etc/dbr.env && set -eux && \
         --slave /usr/bin/javac  javac  "${JDK_DIR}/bin/javac"  \
         --slave /usr/bin/jar    jar    "${JDK_DIR}/bin/jar"    \
         --slave /usr/bin/jps    jps    "${JDK_DIR}/bin/jps"    \
-        ${JSHELL_SLAVE}
+        ${JSHELL_SLAVE} && \
+    rm -f /var/log/alternatives.log
 
 # /opt/java -> /opt/java<CLUSTER_JDK_MAJOR>, created in the cluster stage.
 ENV JAVA_HOME=/opt/java
 ENV PATH="/opt/java/bin:${PATH}"
 
 # ── Spark (without Hadoop) ──────────────────────────────────────────────────
+#   Dropped after extraction (local[*] never uses them): the YARN shuffle
+#   service and the YARN/Mesos/Kubernetes scheduler jars, R bindings, examples,
+#   sample data, Kubernetes Dockerfiles.
+#   PySpark is NOT pip-installed: a .pth file puts /opt/spark/python and its
+#   bundled py4j on sys.path, which is how Databricks itself exposes PySpark and
+#   avoids a second 251 MB copy of the jars inside site-packages.
 RUN . /etc/dbr.env && set -eux && \
     cd /opt && \
     URL="https://archive.apache.org/dist/spark/spark-${SPARK_VER}/spark-${SPARK_VER}-bin-without-hadoop.tgz" && \
@@ -278,16 +379,16 @@ RUN . /etc/dbr.env && set -eux && \
     sha512sum --check "spark-${SPARK_VER}-bin-without-hadoop.tgz.sha512" && \
     tar -xzf "spark-${SPARK_VER}-bin-without-hadoop.tgz" && \
     mv "spark-${SPARK_VER}-bin-without-hadoop" "spark-${SPARK_VER}" && \
-    ln -sf "spark-${SPARK_VER}" spark && \
-    rm -f /opt/*.tgz*
-
-# Install PySpark from the Spark distribution:
-RUN . /etc/dbr.env && set -eux && \
-    cd /opt/spark/python && \
-    python3 setup.py -q sdist && \
-    python3 -m pip install --no-cache-dir \
-        "dist/pyspark-${SPARK_VER}.tar.gz" && \
-    rm -rf build dist
+    ln -sfn "spark-${SPARK_VER}" spark && \
+    rm -f /opt/*.tgz* && \
+    cd /opt/spark && \
+    rm -rf yarn R examples data kubernetes && \
+    rm -f jars/spark-yarn_* jars/spark-mesos_* jars/spark-kubernetes_* \
+          jars/mesos-* jars/kubernetes-* && \
+    SITE="$(python3 -c 'import sysconfig; print(sysconfig.get_paths()["purelib"])')" && \
+    printf '%s\n' /opt/spark/python /opt/spark/python/lib/py4j-*-src.zip \
+        > "${SITE}/pyspark.pth" && \
+    python3 -c 'import pyspark; print("pyspark", pyspark.__version__)'
 
 ENV SPARK_HOME=/opt/spark
 # Spark runs on /opt/java<SPARK_JDK_MAJOR>, reached through the /opt/spark-java
@@ -299,9 +400,21 @@ RUN . /etc/dbr.env && set -eux && \
     ln -sfn "/opt/java${SPARK_JDK_MAJOR}" /opt/spark-java
 ENV SPARK_JAVA_HOME=/opt/spark-java
 
-# ── Hadoop (multi-arch) ─────────────────────────────────────────────────────
+# ── Hadoop (multi-arch, trimmed to what Spark needs) ────────────────────────
 #   When Apache ships no aarch64 tarball (HADOOP_ARM64_SUFFIX empty) the x64
 #   tarball is used and its x64-only lib/native is dropped on arm64.
+#   Kept (verified with a Delta + Parquet round trip and by loading the
+#   abfs / wasb / adl filesystem classes):
+#     share/hadoop/common and share/hadoop/hdfs with their lib/ directories;
+#     share/hadoop/mapreduce/hadoop-mapreduce-client-core — Spark's input and
+#       output formats and file committers live there;
+#     share/hadoop/tools/lib: only the Azure connectors and their SDKs;
+#     lib/native/libhadoop.so — optional native codecs;
+#     bin/, libexec/, etc/ — the `hadoop` CLI (2 MB).
+#   Dropped: share/doc (442 MB), yarn (137 MB), client (84 MB), the rest of
+#   tools/lib (330 MB, mostly aws-java-sdk-bundle: S3A is not wired; add
+#   hadoop-aws-*.jar and aws-java-sdk-bundle-*.jar to the `find` below if you
+#   need it), *-tests/*-sources jars, static native archives, sbin, include.
 RUN . /etc/dbr.env && set -eux && \
     cd /opt && \
     case "${TARGETARCH}" in \
@@ -316,25 +429,43 @@ RUN . /etc/dbr.env && set -eux && \
         > "${FILE}.sha512" && \
     sha512sum --check "${FILE}.sha512" && \
     tar -xzf "${FILE}" && \
-    ln -sf "hadoop-${HADOOP_VER}" hadoop && \
+    ln -sfn "hadoop-${HADOOP_VER}" hadoop && \
+    rm -f /opt/*.tar.gz* && \
+    cd "/opt/hadoop-${HADOOP_VER}" && \
+    H=share/hadoop && \
+    mkdir -p /tmp/keep/tools/lib /tmp/keep/mapreduce && \
+    find "${H}/tools/lib" -maxdepth 1 \( -name 'hadoop-azure*.jar' \
+        -o -name 'azure-*.jar' -o -name 'wildfly-openssl-*.jar' \
+        -o -name 'jetty-util-ajax-*.jar' \) -exec mv -t /tmp/keep/tools/lib {} + && \
+    mv "${H}"/mapreduce/hadoop-mapreduce-client-core-*.jar /tmp/keep/mapreduce/ && \
+    rm -rf share/doc "${H}/yarn" "${H}/client" "${H}/mapreduce" "${H}/tools" \
+           sbin include && \
+    mv /tmp/keep/tools "${H}/tools" && \
+    mv /tmp/keep/mapreduce "${H}/mapreduce" && \
+    rmdir /tmp/keep && \
+    find "${H}" \( -name '*-tests.jar' -o -name '*-sources.jar' \) -delete && \
+    find "${H}" -type d -name sources -prune -exec rm -rf {} + && \
     if [ "${TARGETARCH}" = "arm64" ] && [ -z "${HADOOP_ARM64_SUFFIX}" ]; then \
-        rm -rf "hadoop-${HADOOP_VER}/lib/native"; \
-    fi && \
-    rm -f /opt/*.tar.gz*
+        rm -rf lib/native; \
+    elif [ -d lib/native ]; then \
+        find lib/native -mindepth 1 -maxdepth 1 ! -name 'libhadoop.so*' -exec rm -rf {} +; \
+    fi
 
 ENV HADOOP_HOME=/opt/hadoop
 ENV PATH="${HADOOP_HOME}/bin:${HADOOP_HOME}/sbin:${PATH}"
 
 # ── Wire Spark + Hadoop + Delta Lake ─────────────────────────────────────────
+#   The classpath is spelled out (instead of `hadoop classpath`) so it lists
+#   exactly the directories kept above.
 RUN . /etc/dbr.env && set -eux && \
-    SPARK_DIST_CP="$(hadoop classpath)" && \
-    echo "export SPARK_DIST_CLASSPATH=\"${SPARK_DIST_CP}:${HADOOP_HOME}/share/hadoop/tools/lib/*\"" \
+    H=/opt/hadoop/share/hadoop && \
+    printf '%s\n' \
+        "export SPARK_DIST_CLASSPATH=\"/opt/hadoop/etc/hadoop:${H}/common/lib/*:${H}/common/*:${H}/hdfs:${H}/hdfs/lib/*:${H}/hdfs/*:${H}/mapreduce/*:${H}/tools/lib/*\"" \
+        'export JAVA_HOME=/opt/spark-java' \
         >> /opt/spark/conf/spark-env.sh && \
-    echo 'export JAVA_HOME=/opt/spark-java' \
-        >> /opt/spark/conf/spark-env.sh && \
-    echo 'spark.sql.extensions io.delta.sql.DeltaSparkSessionExtension' \
-        >> /opt/spark/conf/spark-defaults.conf && \
-    echo 'spark.sql.catalog.spark_catalog org.apache.spark.sql.delta.catalog.DeltaCatalog' \
+    printf '%s\n' \
+        'spark.sql.extensions io.delta.sql.DeltaSparkSessionExtension' \
+        'spark.sql.catalog.spark_catalog org.apache.spark.sql.delta.catalog.DeltaCatalog' \
         >> /opt/spark/conf/spark-defaults.conf
 
 ENV SPARK_CONF_DIR=/opt/spark/conf
@@ -342,12 +473,20 @@ ENV SPARK_CONF_DIR=/opt/spark/conf
 # Delta Lake JARs + the delta-spark Python API.
 #   --no-deps: delta-spark's pyspark pin may be newer than the Spark release
 #   Databricks actually ships (e.g. delta 3.3.x wants pyspark>=3.5.3 while
-#   DBR 16.x runs Spark 3.5.2).  PySpark is already installed from /opt/spark.
+#   DBR 16.x runs Spark 3.5.2).  PySpark comes from /opt/spark via the .pth.
 RUN . /etc/dbr.env && set -eux && \
     cd /opt/spark/jars && \
     curl -fsSL -O "https://repo1.maven.org/maven2/io/delta/delta-spark_${SCALA_BIN}/${DELTA_VER}/delta-spark_${SCALA_BIN}-${DELTA_VER}.jar" && \
     curl -fsSL -O "https://repo1.maven.org/maven2/io/delta/delta-storage/${DELTA_VER}/delta-storage-${DELTA_VER}.jar" && \
-    python3 -m pip install --no-cache-dir --no-deps "delta-spark==${DELTA_VER}"
+    python3 -m pip install --no-cache-dir --no-deps "delta-spark==${DELTA_VER}" && \
+    rm -rf /root/.cache
 
 # ── Azure CLI (local dev only) ───────────────────────────────────────────────
-RUN curl -sL https://aka.ms/InstallAzureCLIDeb | sudo bash
+#   Microsoft's installer adds the apt repository and installs the azure-cli
+#   deb, which bundles its own CPython: 634 MB, the single largest optional
+#   component of this image.  Delete this step if you do not need `az`.
+#   The installer's apt lists (51 MB) and logs are removed in the same layer.
+RUN curl -fsSL https://aka.ms/InstallAzureCLIDeb | bash && \
+    apt-get clean && \
+    rm -rf /var/lib/apt/lists/* /var/cache/apt/* /var/log/apt /var/log/dpkg.log \
+           /var/cache/debconf/*-old /tmp/* /var/tmp/* /root/.cache

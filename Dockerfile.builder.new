@@ -130,12 +130,18 @@ RUN . /etc/dbr.env && set -eux && \
         "pandas==${PANDAS_VER}"
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 6. Build all remaining wheels from the requirements file
+# 6. Build all remaining wheels: the release-notes table, then the extras
 #
 #    Only setuptools is constrained — Cython==3.0.11 (16.3) or 0.29.32 (15.4)
 #    builds normally.  --find-links=/wheels reuses the pandas wheel from step 5.
-#    Extras that are not on the Databricks list (azure-keyvault, dotenv, …)
-#    live at the bottom of the same requirements file.
+#
+#    requirements/dbs-<ver>.txt is the "Installed Python libraries" table of the
+#    release notes.  It is a complete `pip freeze` of the runtime, so it is
+#    collected with --no-deps: a dependency the table does not list is one
+#    Databricks does not ship, and the runtime image installs the same way.
+#    requirements/extras-<ver>.txt (dotenv, azure-keyvault, …) resolves its own
+#    dependencies but is constrained (-c) to the table so nothing can move a
+#    Databricks pin.  The directory is bind-mounted, never copied into a layer.
 #
 #    pycairo (a PyGObject build dependency, Linux has no PyPI wheel) uses the
 #    meson-python backend, which needs a `meson` executable on PATH.  Older
@@ -143,12 +149,19 @@ RUN . /etc/dbr.env && set -eux && \
 #    build environment, so a system-wide meson + ninja is provided here.  Both
 #    stay in the builder only; nothing from them lands in /wheels.
 # ─────────────────────────────────────────────────────────────────────────────
-COPY requirements/dbs-${DATABRICKS_RUNTIME}.txt /tmp/requirements.txt
-RUN . /etc/dbr.env && set -eux && \
-    python3 -m pip install meson ninja && \
+RUN --mount=type=bind,source=requirements,target=/tmp/requirements \
+    . /etc/dbr.env && set -eux && \
+    python3 -m pip install --no-cache-dir meson ninja && \
     printf "setuptools==${SETUPTOOLS_PIN}\n" > /tmp/constraints-main.txt && \
     PIP_CONSTRAINT=/tmp/constraints-main.txt \
     python3 -m pip wheel \
         --wheel-dir=/wheels \
         --find-links=/wheels \
-        -r /tmp/requirements.txt
+        --no-deps \
+        -r "/tmp/requirements/dbs-${DATABRICKS_RUNTIME}.txt" && \
+    PIP_CONSTRAINT=/tmp/constraints-main.txt \
+    python3 -m pip wheel \
+        --wheel-dir=/wheels \
+        --find-links=/wheels \
+        -c "/tmp/requirements/dbs-${DATABRICKS_RUNTIME}.txt" \
+        -r "/tmp/requirements/extras-${DATABRICKS_RUNTIME}.txt"
