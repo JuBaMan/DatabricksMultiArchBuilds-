@@ -54,7 +54,11 @@ Other LTS releases are developed on `lts/<ver>` branches, each with its own
    non-Databricks extras at the bottom (`dotenv`, `python-dotenv`,
    `azure-identity`, `azure-keyvault`). **Never add `delta-spark` here**: it
    depends on `pyspark` and would pull Spark into the cluster image. The local
-   stage installs it with `--no-deps`.
+   stage installs it with `--no-deps`. Check the extras against the runtime's
+   own pins before building: `pip install --dry-run -c <pins> <extras>` in a
+   `python:<ver>-slim` container catches a conflict in a minute instead of a
+   25-minute wheels build (14.3 and 15.4 need `azure-identity==1.17.1`
+   because newer releases require an `azure-core` those runtimes do not ship).
 2. `Dockerfile.builder.new`: one `FROM ubuntu:<dated tag> AS base-<ver>` line
    and one case in the step-0 block (`PYTHON_VERSION`, `PIP_VER`,
    `SETUPTOOLS_PIN`, `PANDAS_VER`).
