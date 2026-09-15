@@ -37,6 +37,7 @@ ARG DATABRICKS_RUNTIME=16.3
 
 # ── Base-image router (BuildKit only builds the stage it needs) ──────────────
 #   Must stay identical to the router in Dockerfile.builder.new.
+FROM ubuntu:noble-20250910 AS base-17.3
 FROM ubuntu:noble-20241015 AS base-16.3
 FROM ubuntu:jammy-20240808  AS base-15.4
 
@@ -73,6 +74,13 @@ ARG PIP_BREAK_SYSTEM_PACKAGES=1
 #                                 cdn.azul.com/zulu-embedded (older JDK 8s)
 RUN set -eux; \
     case "${DATABRICKS_RUNTIME}" in \
+    17.3) printf '%s\n' \
+            'PYTHON_VERSION=3.12' \
+            'PIP_VER=25.0.1' \
+            'CLUSTER_JDK_MAJOR=17' \
+            'CLUSTER_ZULU_ID=zulu17.58.21-ca-jdk17.0.15' \
+            'CLUSTER_ZULU_ARM64_EMBEDDED=false' \
+            > /etc/dbr.env ;; \
     16.3) printf '%s\n' \
             'PYTHON_VERSION=3.12' \
             'PIP_VER=24.2.0' \
@@ -217,6 +225,15 @@ RUN apt-get update && \
 #   SCALA_BIN            — Scala binary version of the delta-spark artifact
 RUN set -eux; \
     case "${DATABRICKS_RUNTIME}" in \
+    17.3) printf '%s\n' \
+            'SPARK_JDK_MAJOR=17' \
+            'SPARK_ZULU_ID=zulu17.58.21-ca-jdk17.0.15' \
+            'SPARK_VER=4.0.0' \
+            'HADOOP_VER=3.4.1' \
+            'HADOOP_ARM64_SUFFIX=' \
+            'DELTA_VER=4.0.0' \
+            'SCALA_BIN=2.13' \
+            >> /etc/dbr.env ;; \
     16.3) printf '%s\n' \
             'SPARK_JDK_MAJOR=17' \
             'SPARK_ZULU_ID=zulu17.54.21-ca-jdk17.0.13' \
