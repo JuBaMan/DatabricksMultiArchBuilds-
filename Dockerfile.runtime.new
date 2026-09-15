@@ -290,8 +290,11 @@ RUN . /etc/dbr.env && set -eux && \
     rm -rf build dist
 
 ENV SPARK_HOME=/opt/spark
-# Spark runs on /opt/java<SPARK_JDK_MAJOR>; SPARK_JAVA_HOME is resolved at
-# build time via the symlink.
+# Spark runs on /opt/java<SPARK_JDK_MAJOR>, reached through the /opt/spark-java
+# symlink.  Spark's launcher (bin/spark-class) only honours JAVA_HOME, so the
+# wiring step below exports JAVA_HOME=/opt/spark-java from spark-env.sh, which
+# every spark-submit / pyspark launch sources.  The image-wide JAVA_HOME stays
+# on the cluster JDK; SPARK_JAVA_HOME is informational.
 RUN . /etc/dbr.env && set -eux && \
     ln -sfn "/opt/java${SPARK_JDK_MAJOR}" /opt/spark-java
 ENV SPARK_JAVA_HOME=/opt/spark-java
@@ -326,6 +329,8 @@ ENV PATH="${HADOOP_HOME}/bin:${HADOOP_HOME}/sbin:${PATH}"
 RUN . /etc/dbr.env && set -eux && \
     SPARK_DIST_CP="$(hadoop classpath)" && \
     echo "export SPARK_DIST_CLASSPATH=\"${SPARK_DIST_CP}:${HADOOP_HOME}/share/hadoop/tools/lib/*\"" \
+        >> /opt/spark/conf/spark-env.sh && \
+    echo 'export JAVA_HOME=/opt/spark-java' \
         >> /opt/spark/conf/spark-env.sh && \
     echo 'spark.sql.extensions io.delta.sql.DeltaSparkSessionExtension' \
         >> /opt/spark/conf/spark-defaults.conf && \
