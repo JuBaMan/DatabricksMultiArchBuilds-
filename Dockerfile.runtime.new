@@ -298,10 +298,14 @@ RUN . /etc/dbr.env && set -eux && \
     ln -sf "spark-${SPARK_VER}" spark && \
     rm -f /opt/*.tgz*
 
-# Install PySpark from the Spark distribution:
+# Install PySpark from the Spark distribution.
+#   Spark >= 4.0 ships setup.py as python/packaging/classic/setup.py (still
+#   run from python/, writes dist/ there); Spark 3.x keeps python/setup.py.
 RUN . /etc/dbr.env && set -eux && \
     cd /opt/spark/python && \
-    python3 setup.py -q sdist && \
+    SETUP=setup.py && \
+    if [ ! -f "${SETUP}" ]; then SETUP=packaging/classic/setup.py; fi && \
+    python3 "${SETUP}" -q sdist && \
     python3 -m pip install --no-cache-dir \
         "dist/pyspark-${SPARK_VER}.tar.gz" && \
     rm -rf build dist
