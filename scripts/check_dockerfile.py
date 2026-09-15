@@ -92,6 +92,19 @@ def main(paths):
                     print(f"{path}: RUN #{runs} fails bash -n:\n{r.stderr}\n--- body ---\n{body}\n")
                 if 'case "${DATABRICKS_RUNTIME}"' in body:
                     cases.append(re.findall(r"(?:^|\s)([0-9]+\.[0-9]+)\)\s", body))
+                    # Every case must write the same KEY= set to /etc/dbr.env:
+                    # a key missing from one runtime only fails later under
+                    # `set -u`, deep inside a build.
+                    keysets = {}
+                    for ver, blk in re.findall(
+                        r"(?:^|\s)([0-9]+\.[0-9]+)\)\s*printf(.*?)(?=/etc/dbr\.env)", body, re.S
+                    ):
+                        keysets[ver] = set(re.findall(r"'([A-Z_0-9]+)=", blk))
+                    ref = next(iter(keysets.values()), set())
+                    for ver, keys in keysets.items():
+                        if keys != ref:
+                            ok = False
+                            print(f"{path}: case {ver} writes keys {sorted(keys ^ ref)} differently from the others")
         print(f"{path}: {runs} RUN instructions checked with `{os.path.basename(bash)} -n`")
         print(f"  FROM router runtimes : {routers}")
         for i, c in enumerate(cases, 1):
