@@ -226,6 +226,3 @@ widgetsnbextension==3.6.6
 wrapt==1.17.0
 yapf==0.40.2
 zipp==3.21.0
-dotenv==0.9.9
-python-dotenv==1.1.0
-azure-keyvault==4.2.0
