@@ -91,6 +91,8 @@ RUN set -eux; \
             > /etc/dbr.env ;; \
     14.3) printf '%s\n' \
             'PYTHON_VERSION=3.10' \
+            'PYTHON_SOURCE_VERSION=' \
+            'PYTHON_RUNTIME_LIBS=' \
             'PIP_VER=22.3.1' \
             'CLUSTER_JDK_MAJOR=8' \
             'CLUSTER_ZULU_ID=zulu8.74.0.17-ca-jdk8.0.392' \

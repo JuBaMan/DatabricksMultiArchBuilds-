@@ -26,8 +26,9 @@ Branch: `lts/14.3`. Images: `lcccguy/databricks14.3-wheels:latest`,
 
 `requirements/dbs-14.3.txt`: the "Installed Python libraries" table as
 `name==version` (157 pins) minus `unattended-upgrades` (an Ubuntu package),
-plus the usual extras `dotenv==0.9.9`, `python-dotenv==1.1.0`,
-`azure-keyvault==4.2.0`, `azure-identity==1.17.1`. No `delta-spark`.
+installed with `--no-deps`. `requirements/extras-14.3.txt` holds the usual
+extras `dotenv==0.9.9`, `python-dotenv==1.1.0`, `azure-keyvault==4.2.0`,
+`azure-identity==1.17.1`, constrained to the table. No `delta-spark`.
 `azure-identity` is 1.17.1 rather than the 1.19.0 used on newer runtimes
 because 1.18+ requires `azure-core>=1.31`, and every such azure-core needs
 `typing-extensions>=4.6`, which conflicts with this runtime's
