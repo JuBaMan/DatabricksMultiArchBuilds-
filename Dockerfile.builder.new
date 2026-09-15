@@ -25,6 +25,7 @@ FROM ubuntu:noble-20250910 AS base-17.3
 FROM ubuntu:noble-20241015 AS base-16.3
 FROM ubuntu:noble-20250404 AS base-16.4
 FROM ubuntu:jammy-20240808  AS base-15.4
+FROM ubuntu:jammy-20240125  AS base-14.3
 FROM base-${DATABRICKS_RUNTIME} AS builder
 
 ARG DEBIAN_FRONTEND=noninteractive
@@ -68,6 +69,12 @@ RUN set -eux; \
             'SETUPTOOLS_PIN=68.0.0' \
             'PANDAS_VER=1.5.3' \
             > /etc/dbr.env ;; \
+    14.3) printf '%s\n' \
+            'PYTHON_VERSION=3.10' \
+            'PIP_VER=22.3.1' \
+            'SETUPTOOLS_PIN=65.6.3' \
+            'PANDAS_VER=1.5.3' \
+            > /etc/dbr.env ;; \
     *) echo "Unsupported runtime: ${DATABRICKS_RUNTIME}" >&2; exit 1 ;; \
     esac
 
@@ -82,6 +89,8 @@ RUN apt-get update && \
         dbus libdbus-1-dev libdbus-glib-1-dev patchelf \
         # psycopg2:
         libpq-dev \
+        # pyodbc (4.0.32 has no Linux wheels; needs sql.h and -lodbc):
+        unixodbc-dev \
         # PyGObject / pycairo:
         libcairo2-dev gobject-introspection libgirepository1.0-dev && \
     apt-get clean && rm -rf /var/lib/apt/lists/*

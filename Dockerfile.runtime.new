@@ -38,6 +38,7 @@ FROM ubuntu:noble-20250910 AS base-17.3
 FROM ubuntu:noble-20241015 AS base-16.3
 FROM ubuntu:noble-20250404 AS base-16.4
 FROM ubuntu:jammy-20240808  AS base-15.4
+FROM ubuntu:jammy-20240125  AS base-14.3
 
 # ── Wheel cache (image name derived from the runtime version) ────────────────
 #   Bind-mounted into the install step below; never copied into a layer.
@@ -106,6 +107,15 @@ RUN set -eux; \
             'PIP_VER=23.2.1' \
             'CLUSTER_JDK_MAJOR=8' \
             'CLUSTER_ZULU_ID=zulu8.78.0.19-ca-jdk8.0.412' \
+            'CLUSTER_ZULU_ARM64_EMBEDDED=false' \
+            > /etc/dbr.env ;; \
+    14.3) printf '%s\n' \
+            'PYTHON_VERSION=3.10' \
+            'PYTHON_SOURCE_VERSION=' \
+            'PYTHON_RUNTIME_LIBS=' \
+            'PIP_VER=22.3.1' \
+            'CLUSTER_JDK_MAJOR=8' \
+            'CLUSTER_ZULU_ID=zulu8.74.0.17-ca-jdk8.0.392' \
             'CLUSTER_ZULU_ARM64_EMBEDDED=false' \
             > /etc/dbr.env ;; \
     *) echo "Unsupported runtime: ${DATABRICKS_RUNTIME}" >&2; exit 1 ;; \
@@ -363,6 +373,15 @@ RUN set -eux; \
             'HADOOP_VER=3.3.6' \
             'HADOOP_ARM64_SUFFIX=-aarch64' \
             'DELTA_VER=3.2.0' \
+            'SCALA_BIN=2.12' \
+            >> /etc/dbr.env ;; \
+    14.3) printf '%s\n' \
+            'SPARK_JDK_MAJOR=8' \
+            'SPARK_ZULU_ID=' \
+            'SPARK_VER=3.5.0' \
+            'HADOOP_VER=3.3.6' \
+            'HADOOP_ARM64_SUFFIX=-aarch64' \
+            'DELTA_VER=3.1.0' \
             'SCALA_BIN=2.12' \
             >> /etc/dbr.env ;; \
     *) echo "Unsupported runtime: ${DATABRICKS_RUNTIME}" >&2; exit 1 ;; \
