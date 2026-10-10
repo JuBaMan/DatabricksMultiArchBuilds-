@@ -39,6 +39,25 @@ def find_bash():
     sys.exit("bash not found; set BASH=<path to bash>")
 
 
+ELFO_ADD_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*==[^=\s]+$")
+ELFO_REM_RE = re.compile(r"^-[A-Za-z0-9][A-Za-z0-9._-]*$")
+
+
+def lint_elfo(path):
+    """Additions must be ==-pinned, removals bare '-package' lines."""
+    errs = []
+    for n, raw in enumerate(open(path, encoding="utf-8"), 1):
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("-"):
+            if not ELFO_REM_RE.match(line):
+                errs.append(f"line {n}: removal must be '-package' without a version: {line}")
+        elif not ELFO_ADD_RE.match(line):
+            errs.append(f"line {n}: addition must be 'package==version': {line}")
+    return errs
+
+
 def instructions(text):
     """Yield (instruction, argument) pairs with continuation lines joined."""
     buf = []
@@ -113,12 +132,19 @@ def main(paths):
                 ok = False
                 print(f"  !! case block {i} does not match the FROM router")
         req_dir = os.path.join(os.path.dirname(os.path.abspath(path)), "requirements")
+        kinds = ["dbs", "extras"]
+        if "elfo-${DATABRICKS_RUNTIME}" in text:
+            kinds.append("elfo")
         for ver in routers:
-            for kind in ("dbs", "extras"):
+            for kind in kinds:
                 f = os.path.join(req_dir, f"{kind}-{ver}.txt")
                 if not os.path.isfile(f):
                     ok = False
                     print(f"  !! missing {os.path.relpath(f)}")
+                elif kind == "elfo":
+                    for err in lint_elfo(f):
+                        ok = False
+                        print(f"  !! {os.path.relpath(f)}: {err}")
     return 0 if ok else 1
 
 

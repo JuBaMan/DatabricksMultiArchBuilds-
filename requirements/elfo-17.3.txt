@@ -1,0 +1,75 @@
+# ELFO delta for DBR 17.3 — input to Dockerfile.runtime.new (IMAGE_FLAVOR=elfo)
+# and Dockerfile.wheels-elfo, parsed by scripts/gen_elfo_manifest.sh.
+# Syntax: "pkg==ver" adds on top of the LTS table, "-pkg" removes from it.
+#
+# ── additions (py3.12, numpy 2.1.3, pandas 2.2.3, sklearn 1.6.1) ─────────────
+# numpy-2-compatible builds required on this runtime.
+netCDF4==1.7.2
+xarray==2024.7.0
+zarr==2.18.3
+# zarr 2.x needs numcodecs<0.16 (0.16 made blosc cbuffer_* private)
+numcodecs==0.15.1
+polars==1.8.2
+cdsapi==0.7.0
+openpyxl==3.1.5
+tqdm==4.66.4
+# xgboost>=2.1 pulls nvidia-nccl-cu12 on linux/amd64; use xgboost-cpu to slim
+xgboost==2.1.4
+lightgbm==4.6.0
+category-encoders==2.8.1
+holidays==0.46
+regex==2024.5.15
+# azure-identity (DefaultAzureCredential) already ships in this table (1.20.0)
+#
+# ── removals (unused by ELFO/QuantLib/rencal; dependency-closed set) ─────────
+# Kept on purpose: google-auth+rsa+pyasn1* (databricks-sdk dep),
+# googleapis-common-protos (grpcio-status dep), mypy-extensions+pathspec (black
+# deps), jedi+parso (IPython completion), ipyflow-core+pyccolo (Databricks
+# notebook kernel), statsmodels+patsy (category-encoders deps),
+# virtualenv+distlib+filelock (creates /databricks/python3).
+# Removals not present in this runtime's table are skipped automatically.
+-boto3
+-botocore
+-s3transfer
+-jmespath
+-google-api-core
+-google-cloud-core
+-google-cloud-storage
+-google-crc32c
+-google-resumable-media
+-proto-plus
+-psycopg2
+-dbus-python
+-PyGObject
+-launchpadlib
+-lazr.restfulclient
+-lazr.uri
+-wadllib
+-httplib2
+-ssh-import-id
+-mypy
+-pyright
+-nodeenv
+-rope
+-yapf
+-whatthepatch
+-tokenize-rt
+-types-protobuf
+-types-psutil
+-types-pytz
+-types-PyYAML
+-types-requests
+-types-setuptools
+-types-six
+-types-urllib3
+#
+# ── opt-in trims (uncomment to drop notebook autocomplete/format QoL) ────────
+# -python-lsp-server
+# -python-lsp-jsonrpc
+# -pyflakes
+# -mccabe
+# -docstring-to-markdown
+# -pytoolconfig
+# -ujson
+# -facets-overview
+# -black

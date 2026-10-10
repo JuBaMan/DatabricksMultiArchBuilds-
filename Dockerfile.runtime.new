@@ -29,8 +29,13 @@
 #     produced before it ends (a later `rm` would not shrink the image).
 ###############################################################################
 
-# ── The only user-facing build arg ───────────────────────────────────────────
+# ── User-facing build args ──────────────────────────────────────────────────────
+#   IMAGE_FLAVOR=elfo — trimmed+extended variant driven by
+#                       requirements/elfo-<ver>.txt (pair with WHEELS_TAG=elfo,
+#                       the wheel overlay built by Dockerfile.wheels-elfo)
 ARG DATABRICKS_RUNTIME=16.3
+ARG IMAGE_FLAVOR=dbr
+ARG WHEELS_TAG=latest
 
 # ── Base-image router (BuildKit only builds the stage it needs) ──────────────
 #   Must stay identical to the router in Dockerfile.builder.new.
@@ -43,7 +48,7 @@ FROM ubuntu:jammy-20240125  AS base-14.3
 
 # ── Wheel cache (image name derived from the runtime version) ────────────────
 #   Bind-mounted into the install step below; never copied into a layer.
-FROM lcccguy/databricks${DATABRICKS_RUNTIME}-wheels:latest AS wheels
+FROM lcccguy/databricks${DATABRICKS_RUNTIME}-wheels:${WHEELS_TAG} AS wheels
 
 
 ###############################################################################
@@ -182,6 +187,7 @@ FROM config AS cluster
 
 ARG DEBIAN_FRONTEND=noninteractive
 ARG DATABRICKS_RUNTIME
+ARG IMAGE_FLAVOR
 # Equivalent to passing --break-system-packages to every pip call, but also
 # works with pip < 23.0.1 (which rejects the flag).  ARG, not ENV: it is only
 # visible during the build and leaves no trace in the image.
@@ -264,20 +270,41 @@ RUN . /etc/dbr.env && set -eux && \
 #   * Bytecode caches are kept on purpose: every Spark Python worker imports
 #     numpy/pandas on start, and without .pyc files each cold process
 #     recompiles them (README, "Size and fidelity rules").
+#   * IMAGE_FLAVOR=elfo swaps the table for a generated manifest (the table
+#     minus the "-package" lines of requirements/elfo-<ver>.txt), installs that
+#     file's pinned additions after the extras, and smoke-tests the result.
 RUN --mount=type=bind,from=wheels,source=/wheels,target=/wheels \
     --mount=type=bind,source=requirements,target=/tmp/requirements \
+    --mount=type=bind,source=scripts,target=/tmp/scripts \
     . /etc/dbr.env && set -eux && \
+    DBS="/tmp/requirements/dbs-${DATABRICKS_RUNTIME}.txt" && \
+    MANIFEST="${DBS}" && \
+    if [ "${IMAGE_FLAVOR}" = "elfo" ]; then \
+        bash /tmp/scripts/gen_elfo_manifest.sh "${DBS}" \
+            "/tmp/requirements/elfo-${DATABRICKS_RUNTIME}.txt" \
+            /tmp/elfo-manifest.txt /tmp/elfo-additions.txt; \
+        MANIFEST=/tmp/elfo-manifest.txt; \
+    fi && \
     python3 -m pip install --no-cache-dir --no-index --find-links=/wheels \
-        --no-deps -r "/tmp/requirements/dbs-${DATABRICKS_RUNTIME}.txt" && \
+        --no-deps -r "${MANIFEST}" && \
     python3 -m pip install --no-cache-dir --no-index --find-links=/wheels \
-        -c "/tmp/requirements/dbs-${DATABRICKS_RUNTIME}.txt" \
+        -c "${DBS}" \
         -r "/tmp/requirements/extras-${DATABRICKS_RUNTIME}.txt" && \
+    if [ "${IMAGE_FLAVOR}" = "elfo" ]; then \
+        python3 -m pip install --no-cache-dir --no-index --find-links=/wheels \
+            -c "${DBS}" -r /tmp/elfo-additions.txt && \
+        python3 -c "import netCDF4, xarray, zarr, polars, cdsapi, openpyxl, tqdm, xgboost, lightgbm, category_encoders, holidays, regex, mlflow, dotenv, azure.identity" && \
+        if python3 -c "import boto3" 2>/dev/null; then \
+            echo "elfo flavor: boto3 should not be installed" >&2; exit 1; \
+        fi; \
+    fi && \
     virtualenv --system-site-packages --python=python3 \
         --no-download --no-setuptools --no-periodic-update /databricks/python3 && \
     ln -sfn /databricks/python3 /databricks/python && \
     /databricks/python3/bin/pip install --no-cache-dir --no-index \
         --find-links=/wheels "pip==${PIP_VER}" && \
-    rm -rf /root/.cache /root/.local/share/virtualenv
+    rm -rf /root/.cache /root/.local/share/virtualenv \
+           /tmp/elfo-manifest.txt /tmp/elfo-additions.txt
 
 # ── 5. JDK — required by the Databricks custom container spec ───────────────
 #   https://docs.databricks.com/aws/en/compute/custom-containers#requirements
