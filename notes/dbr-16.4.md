@@ -22,19 +22,12 @@ Release notes: <https://docs.databricks.com/aws/en/release-notes/runtime/16.4lts
 | `DELTA_VER`                   | `3.3.1`                        | "Delta Lake: 3.3.1"                                                                              |
 | `SCALA_BIN`                   | `2.12`                         | Spark 3.5.x delta-spark artifact                                                                 |
 
-## Relation to 16.3
+## Compatibility
 
-The `16.3` entry on `main` was in practice built from the 16.4 LTS library
-table: `diff <(sort -f requirements/dbs-16.3.txt) <(sort -f requirements/dbs-16.4.txt)`
-is empty. 16.4 LTS differs only in:
-
-- Ubuntu point release 24.04.2 (`noble-20250404` instead of `noble-20241015`)
-- Delta Lake 3.3.1 (16.3 used 3.3.0)
-- the cluster image carries **Java 17, not Java 8**. The custom-container
-  docs say to "match the JDK to the default Java version of your target
-  Databricks Runtime", and 16.4's default is Zulu 17. Consequently the
-  local stage finds `/opt/java17` already present and skips its JDK
-  download; `JAVA_HOME=/opt/java` -> `/opt/java17`.
+The cluster image carries **Java 17**, matching the default Java version of
+the target Databricks Runtime as required by the custom-container docs. The
+local stage therefore finds `/opt/java17` already present and skips its JDK
+download; `JAVA_HOME=/opt/java` -> `/opt/java17`.
 
 `delta-spark==3.3.1` requires `pyspark>=3.5.3` while the runtime ships
 Spark 3.5.2; the local stage installs it with `--no-deps` next to the jars,
@@ -72,7 +65,7 @@ sdist only:
 `cryptography==42.0.5` and `tornado==6.4.1` ship `abi3` wheels for both
 x86_64 and aarch64, so nothing in the table needs Rust/cargo.
 
-This is the same set the 16.3 builder already compiles.
+The shared builder dependency set covers all of these source builds.
 
 ## Build
 

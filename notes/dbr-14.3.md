@@ -19,7 +19,7 @@ Branch: `lts/14.3`. Images: `lcccguy/databricks14.3-wheels:latest`,
 | `SPARK_JDK_MAJOR`             | `8`                            | Spark 3.5.0 runs on the cluster stage's JDK 8; `/opt/java8` already exists, so nothing is downloaded                                                                                                                                                                                 |
 | `SPARK_ZULU_ID`               | (empty)                        | unused because `SPARK_JDK_MAJOR == CLUSTER_JDK_MAJOR`                                                                                                                                                                                                                                |
 | `SPARK_VER`                   | `3.5.0`                        | "powered by Apache Spark 3.5.0" at the top of the release notes                                                                                                                                                                                                                     |
-| `HADOOP_VER`                  | `3.3.6`                        | `spark-parent_2.12-3.5.0.pom` says `<hadoop.version>3.3.4`; the repo uses 3.3.6 for every Spark 3.5.x runtime (15.4, 16.3). 3.3.4 has no aarch64 tarball at all (404 on both `downloads` and `archive.apache.org`) and is no longer on `downloads.apache.org`. See caveats.          |
+| `HADOOP_VER`                  | `3.3.6`                        | `spark-parent_2.12-3.5.0.pom` says `<hadoop.version>3.3.4`; the repo uses 3.3.6 for every Spark 3.5.x runtime (15.4, 16.4). 3.3.4 has no aarch64 tarball at all (404 on both `downloads` and `archive.apache.org`) and is no longer on `downloads.apache.org`. See caveats.          |
 | `HADOOP_ARM64_SUFFIX`         | `-aarch64`                     | `hadoop-3.3.6-aarch64.tar.gz` exists on `downloads.apache.org`                                                                                                                                                                                                                       |
 | `DELTA_VER`                   | `3.1.0`                        | "Delta Lake: 3.1.0"                                                                                                                                                                                                                                                                 |
 | `SCALA_BIN`                   | `2.12`                         | `io.delta:delta-spark_2.12:3.1.0` on Maven Central                                                                                                                                                                                                                                  |
@@ -67,7 +67,7 @@ manylinux wheels for both arches; nothing here needs Rust/cargo.
 ## Caveats
 
 - **`unixodbc-dev` was added to the builder's step 1** (own commit). This is
-  the only shared-step change; 15.4 (pyodbc 4.0.39) and 16.3 (pyodbc 5.0.1)
+  the only shared-step change; 15.4 (pyodbc 4.0.39) and 16.4 (pyodbc 5.0.1)
   download manylinux wheels and never compile pyodbc.
 - `HADOOP_VER=3.3.6` deviates from the Spark 3.5.0 POM (`3.3.4`) on purpose,
   matching 15.4 which runs the same Spark; Hadoop 3.3.4 has no aarch64

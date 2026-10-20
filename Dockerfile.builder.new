@@ -4,7 +4,7 @@
 # Only ONE build-arg needed:
 #   docker buildx build --platform linux/amd64,linux/arm64 \
 #     -f Dockerfile.builder.new \
-#     -t lcccguy/databricks16.3-wheels:latest --push .
+#     -t lcccguy/databricks16.4-wheels:latest --push .
 #
 #   docker buildx build --platform linux/amd64,linux/arm64 \
 #     -f Dockerfile.builder.new \
@@ -16,14 +16,13 @@
 ###############################################################################
 
 # ── The only user-facing build arg ───────────────────────────────────────────
-ARG DATABRICKS_RUNTIME=16.3
+ARG DATABRICKS_RUNTIME=16.4
 
 # ── Base-image router (BuildKit only builds the stage actually needed) ───────
 #   Each tag is the dated Ubuntu image matching the point release named in the
 #   runtime's "System environment" release notes.
 FROM ubuntu:noble-20260210.1 AS base-18.2
 FROM ubuntu:noble-20250910 AS base-17.3
-FROM ubuntu:noble-20241015 AS base-16.3
 FROM ubuntu:noble-20250404 AS base-16.4
 FROM ubuntu:jammy-20240808  AS base-15.4
 FROM ubuntu:jammy-20240125  AS base-14.3
@@ -57,12 +56,6 @@ RUN set -eux; \
             'PIP_VER=25.0.1' \
             'SETUPTOOLS_PIN=74.0.0' \
             'PANDAS_VER=2.2.3' \
-            > /etc/dbr.env ;; \
-    16.3) printf '%s\n' \
-            'PYTHON_VERSION=3.12' \
-            'PIP_VER=24.2.0' \
-            'SETUPTOOLS_PIN=74.0.0' \
-            'PANDAS_VER=1.5.3' \
             > /etc/dbr.env ;; \
     16.4) printf '%s\n' \
             'PYTHON_VERSION=3.12' \
@@ -148,7 +141,7 @@ RUN dpkg --purge --force-depends python3-packaging 2>/dev/null || true
 #    pandas 1.5.3's .pyx files break with Cython 3.  We constrain BOTH
 #    setuptools (keeps pkg_resources available in build-isolation envs) and
 #    Cython<3.  Safe for all runtimes — 15.4 already pins Cython 0.29,
-#    16.3's Cython 3.0.11 is built separately in step 6, and runtimes whose
+#    16.4's Cython 3.0.11 is built separately in step 6, and runtimes whose
 #    pandas pin ships a binary wheel simply download it here.
 # ─────────────────────────────────────────────────────────────────────────────
 RUN . /etc/dbr.env && set -eux && \
@@ -162,7 +155,7 @@ RUN . /etc/dbr.env && set -eux && \
 # ─────────────────────────────────────────────────────────────────────────────
 # 6. Build all remaining wheels: the release-notes table, then the extras
 #
-#    Only setuptools is constrained — Cython==3.0.11 (16.3) or 0.29.32 (15.4)
+#    Only setuptools is constrained — Cython==3.0.11 (16.4) or 0.29.32 (15.4)
 #    builds normally.  --find-links=/wheels reuses the pandas wheel from step 5.
 #
 #    requirements/dbs-<ver>.txt is the "Installed Python libraries" table of the

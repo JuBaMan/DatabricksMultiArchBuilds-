@@ -1,0 +1,74 @@
+# ELFO delta for DBR 14.3 — input to Dockerfile.runtime.new (IMAGE_FLAVOR=elfo)
+# and Dockerfile.wheels-elfo, parsed by scripts/gen_elfo_manifest.sh.
+# Syntax: "pkg==ver" adds on top of the LTS table, "-pkg" removes from it.
+# NOTE: rencal requires Python 3.12 + pydantic 2 (this base ships 3.10 +
+# pydantic 1.10.6) — this flavor serves legacy/pre-rencal ELFO branches.
+#
+# ── additions (py3.10, numpy 1.23.5, pandas 1.5.3, sklearn 1.1.1) ────────────
+netCDF4==1.6.5
+xarray==2023.12.0
+zarr==2.16.1
+polars==1.8.2
+cdsapi==0.7.0
+openpyxl==3.1.5
+tqdm==4.66.4
+xgboost==2.0.3
+lightgbm==4.3.0
+category-encoders==2.6.4
+holidays==0.46
+regex==2024.5.15
+# DBR 14.3 standard runtime ships no mlflow; ELFO imports it (PowerPlants.py)
+mlflow-skinny==2.11.4
+#
+# ── removals (unused by ELFO/QuantLib/rencal; dependency-closed set) ─────────
+# Kept on purpose: google-auth+rsa+pyasn1* (databricks-sdk dep),
+# googleapis-common-protos (grpcio-status dep), mypy-extensions+pathspec (black
+# deps), jedi+parso (IPython completion), ipyflow-core+pyccolo (Databricks
+# notebook kernel), statsmodels+patsy (category-encoders deps),
+# virtualenv+distlib+filelock (creates /databricks/python3).
+# Removals not present in this runtime's table are skipped automatically.
+-boto3
+-botocore
+-s3transfer
+-jmespath
+-google-api-core
+-google-cloud-core
+-google-cloud-storage
+-google-crc32c
+-google-resumable-media
+-proto-plus
+-psycopg2
+-dbus-python
+-PyGObject
+-launchpadlib
+-lazr.restfulclient
+-lazr.uri
+-wadllib
+-httplib2
+-ssh-import-id
+-mypy
+-pyright
+-nodeenv
+-rope
+-yapf
+-whatthepatch
+-tokenize-rt
+-types-protobuf
+-types-psutil
+-types-pytz
+-types-PyYAML
+-types-requests
+-types-setuptools
+-types-six
+-types-urllib3
+#
+# ── opt-in trims (uncomment to drop notebook autocomplete/format QoL) ────────
+# -python-lsp-server
+# -python-lsp-jsonrpc
+# -pyflakes
+# -mccabe
+# -docstring-to-markdown
+# -pytoolconfig
+# -ujson
+# -facets-overview
+# -black

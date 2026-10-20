@@ -102,7 +102,7 @@ Requirements sweep against PyPI (cp312, manylinux, aarch64):
 | `lazr.uri==1.0.6`, `ssh-import-id==5.11`, `wadllib==1.3.6` | sdist only, pure Python | none needed                                     |
 | `pyiceberg==0.9.0`     | cp312 wheels are x86_64 only; aarch64 builds from sdist | poetry-core + Cython>=3 + setuptools via build isolation, one C extension (`avro/decoder_fast.pyx`) with gcc; the build script marks the extension `allowed_to_fail` outside cibuildwheel |
 
-All of the first five are the same versions the 16.3 builder already compiles
+All of the first five are the same versions the 16.4 builder already compiles
 with the same apt list. Rust-backed packages all ship cp312 (or abi3)
 manylinux aarch64 wheels, so no cargo is needed: `rpds-py==0.22.3`,
 `pydantic_core==2.27.2`, `cryptography==43.0.3` (abi3), `mmh3==5.1.0`,

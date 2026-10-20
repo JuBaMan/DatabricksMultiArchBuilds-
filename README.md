@@ -19,18 +19,18 @@ Two images per runtime, both built from the same pair of Dockerfiles:
 ```bash
 # 1. wheels (checkpoint)
 docker buildx build --platform linux/amd64,linux/arm64 \
-  -f Dockerfile.builder.new --build-arg DATABRICKS_RUNTIME=16.3 \
-  -t lcccguy/databricks16.3-wheels:latest --push .
+  -f Dockerfile.builder.new --build-arg DATABRICKS_RUNTIME=16.4 \
+  -t lcccguy/databricks16.4-wheels:latest --push .
 
 # 2. cluster image (no Spark)
 docker buildx build --platform linux/amd64,linux/arm64 \
-  -f Dockerfile.runtime.new --target cluster --build-arg DATABRICKS_RUNTIME=16.3 \
-  -t lcccguy/databricks16.3:cluster --push .
+  -f Dockerfile.runtime.new --target cluster --build-arg DATABRICKS_RUNTIME=16.4 \
+  -t lcccguy/databricks16.4:cluster --push .
 
 # 3. local image (with Spark)
 docker buildx build --platform linux/amd64,linux/arm64 \
-  -f Dockerfile.runtime.new --target local --build-arg DATABRICKS_RUNTIME=16.3 \
-  -t lcccguy/databricks16.3:latest --push .
+  -f Dockerfile.runtime.new --target local --build-arg DATABRICKS_RUNTIME=16.4 \
+  -t lcccguy/databricks16.4:latest --push .
 ```
 
 `DATABRICKS_RUNTIME` is the only build argument. The runtime stage takes its
@@ -47,7 +47,9 @@ builder such as a GitHub Actions `ubuntu-24.04-arm` runner for that half.
 ## Runtimes on `main`
 
 | Runtime  | Ubuntu tag            | Python            | pip    | Cluster JDK                      | Spark | Hadoop | Delta | Spark JDK |
-| -------- | --------------------- | ----------------- | ------ | -------------------------------- | ----- | ------ | ----- | --------- || 18.2     | `noble-20260210.1`    | 3.12.3            | 25.0.1 | Zulu 21.42.19 (21.0.7)             | 4.1.0 | 3.4.2  | 4.2.0 | 21        || 16.3     | `noble-20241015`      | 3.12.3            | 24.2   | Zulu 17.54.21 (17.0.13)          | 3.5.2 | 3.3.6  | 3.3.0 | 17        |
+| -------- | --------------------- | ----------------- | ------ | -------------------------------- | ----- | ------ | ----- | --------- |
+| 18.2     | `noble-20260210.1`    | 3.12.3            | 25.0.1 | Zulu 21.42.19 (21.0.7)           | 4.1.0 | 3.4.2  | 4.2.0 | 21        |
+| 16.4 LTS | `noble-20250404`      | 3.12.3            | 24.2   | Zulu 17.54.21 (17.0.13)          | 3.5.2 | 3.3.6  | 3.3.1 | 17        |
 | 15.4 LTS | `jammy-20240808`      | 3.11.11 (source)  | 23.2.1 | Zulu 8.78.0.19 (8.0.412)         | 3.5.0 | 3.3.6  | 3.2.0 | 8         |
 
 "(source)" means jammy does not ship that patch level (its `python3.11` is
@@ -175,7 +177,7 @@ the JVM Spark actually runs on (Spark's progress bar uses `\r`, so read the
 result from the file rather than grepping stdout):
 
 ```bash
-docker run --rm lcccguy/databricks16.3:latest bash -lc 'cd /tmp && python -c "
+docker run --rm lcccguy/databricks16.4:latest bash -lc 'cd /tmp && python -c "
 from pyspark.sql import SparkSession
 s = SparkSession.builder.master(\"local[2]\").getOrCreate()
 s.range(5).write.format(\"delta\").mode(\"overwrite\").save(\"/tmp/d\")
@@ -190,6 +192,6 @@ For the cluster image, check that the pins match the table and that nothing
 Spark-related is present:
 
 ```bash
-docker run --rm -i lcccguy/databricks16.3:cluster bash -c \
+docker run --rm -i lcccguy/databricks16.4:cluster bash -c \
   'pip freeze | grep -iE "pyspark|delta|hadoop"; python --version; java -version 2>&1 | head -1; ls /databricks'
 ```

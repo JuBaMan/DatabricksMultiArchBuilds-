@@ -1,0 +1,48 @@
+###############################################################################
+# ELFO WHEEL OVERLAY — makes the wheel cache self-sufficient for the elfo
+# image flavor: the filtered manifest, the extras, and the elfo additions
+# (requirements/elfo-<ver>.txt) with their dependencies.  Wheels already in
+# the base cache are reused via --find-links, so only genuinely missing ones
+# are fetched or built — this also heals a -wheels:latest that predates later
+# edits to the dbs/extras files.  Build cache only: clusters never pull this
+# image, so its size does not matter.  Must be pushed BEFORE building the elfo
+# runtime flavors, which consume it via --build-arg WHEELS_TAG=elfo.
+#
+#   docker buildx build --platform linux/amd64,linux/arm64 \
+#     -f Dockerfile.wheels-elfo \
+#     --build-arg DATABRICKS_RUNTIME=16.4 \
+#     -t lcccguy/databricks16.4-wheels:elfo --push .
+###############################################################################
+
+ARG DATABRICKS_RUNTIME=16.4
+FROM lcccguy/databricks${DATABRICKS_RUNTIME}-wheels:latest
+
+ARG DATABRICKS_RUNTIME
+ARG PIP_BREAK_SYSTEM_PACKAGES=1
+
+# Extras and additions resolve their own dependencies but are constrained (-c)
+# to the release-notes table, so a pin clash with the Databricks core stack
+# fails the build here instead of silently moving a version at install time.
+# The table's own setuptools pin constrains any sdist fallback (same value the
+# builder used; works even on wheels images that predate /etc/dbr.env).
+RUN --mount=type=bind,source=requirements,target=/tmp/requirements \
+    --mount=type=bind,source=scripts,target=/tmp/scripts \
+    set -eux && \
+    DBS="/tmp/requirements/dbs-${DATABRICKS_RUNTIME}.txt" && \
+    bash /tmp/scripts/gen_elfo_manifest.sh "${DBS}" \
+        "/tmp/requirements/elfo-${DATABRICKS_RUNTIME}.txt" \
+        /tmp/elfo-manifest.txt /tmp/elfo-additions.txt && \
+    grep -i '^setuptools==' "${DBS}" > /tmp/constraints-elfo.txt && \
+    PIP_CONSTRAINT=/tmp/constraints-elfo.txt \
+    python3 -m pip wheel --wheel-dir=/wheels --find-links=/wheels \
+        --no-deps -r /tmp/elfo-manifest.txt && \
+    PIP_CONSTRAINT=/tmp/constraints-elfo.txt \
+    python3 -m pip wheel --wheel-dir=/wheels --find-links=/wheels \
+        -c "${DBS}" \
+        -r "/tmp/requirements/extras-${DATABRICKS_RUNTIME}.txt" && \
+    PIP_CONSTRAINT=/tmp/constraints-elfo.txt \
+    python3 -m pip wheel --wheel-dir=/wheels --find-links=/wheels \
+        -c "${DBS}" \
+        -r /tmp/elfo-additions.txt && \
+    rm -rf /tmp/elfo-manifest.txt /tmp/elfo-additions.txt \
+           /tmp/constraints-elfo.txt /root/.cache
